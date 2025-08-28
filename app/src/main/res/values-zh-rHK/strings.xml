@@ -24,6 +24,10 @@
     <plurals name="modules_enabled_count">
         <item quantity="other">%d 個模組已啟用</item>
     </plurals>
+    <string name="Apps">應用</string>
+    <plurals name="affected_apps_count">
+        <item quantity="other">已影響 %d 個應用</item>
+    </plurals>
     <string name="Logs">記錄</string>
     <string name="Settings">設定</string>
     <string name="feedback_or_suggestion">回饋或建議</string>
