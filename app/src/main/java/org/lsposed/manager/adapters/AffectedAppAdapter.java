@@ -148,7 +148,7 @@ public class AffectedAppAdapter extends EmptyStateRecyclerView.EmptyStateAdapter
                     onCheckedChange(view, isChecked, installedModule);
                 }
             } else {
-                Set<ModuleUtil.InstalledModule> appliedModules = affectedApp.modules;
+                Set<ModuleUtil.InstalledModule> appliedModules = new HashSet<>(affectedApp.modules);
                 Set<String> applied = appliedModules.stream().map(installedModule -> installedModule.packageName).collect(Collectors.toSet());
                 preferences.edit().putStringSet(affectedApp.packageName, applied).apply();
 
