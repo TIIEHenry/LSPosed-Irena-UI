@@ -136,6 +136,9 @@ public class AffectedAppAdapter extends EmptyStateRecyclerView.EmptyStateAdapter
     private final OnMainSwitchChangeListener switchBarOnCheckedChangeListener = new OnMainSwitchChangeListener() {
         @Override
         public void onSwitchChanged(Switch view, boolean isChecked) {
+            if (enabled == isChecked) {
+                return;
+            }
             enabled = isChecked;
             if (isChecked) {
                 Set<String> lastAppModules = preferences.getStringSet(affectedApp.packageName, new HashSet<>());
