@@ -351,6 +351,7 @@ public final class ModuleUtil {
             return this.description;
         }
 
+        @Nullable
         public List<String> getScopeList() {
             if (scopeList != null) return scopeList;
             List<String> list = null;
@@ -375,11 +376,11 @@ public final class ModuleUtil {
                 //For historical reasons, legacy modules use the opposite name.
                 //https://github.com/rovo89/XposedBridge/commit/6b49688c929a7768f3113b4c65b429c7a7032afa
                 list.replaceAll(s ->
-                    switch (s) {
-                        case "android" -> "system";
-                        case "system" -> "android";
-                        default -> s;
-                    }
+                        switch (s) {
+                            case "android" -> "system";
+                            case "system" -> "android";
+                            default -> s;
+                        }
                 );
                 scopeList = list;
             }

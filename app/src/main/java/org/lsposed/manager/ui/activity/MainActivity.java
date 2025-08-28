@@ -44,6 +44,7 @@ import org.lsposed.manager.R;
 import org.lsposed.manager.databinding.ActivityMainBinding;
 import org.lsposed.manager.repo.RepoLoader;
 import org.lsposed.manager.ui.activity.base.BaseActivity;
+import org.lsposed.manager.ui.fragment.HomeFragmentDirections;
 import org.lsposed.manager.util.ModuleUtil;
 import org.lsposed.manager.util.UpdateUtil;
 
@@ -122,13 +123,15 @@ public class MainActivity extends BaseActivity implements RepoLoader.RepoListene
             if (!TextUtils.isEmpty(intent.getDataString())) {
                 switch (intent.getDataString()) {
                     case "modules" -> nav.setSelectedItemId(R.id.modules_nav);
+                    case "apps" -> nav.setSelectedItemId(R.id.apps_nav);
                     case "logs" -> nav.setSelectedItemId(R.id.logs_fragment);
                     case "repo" -> {
                         if (ConfigManager.isMagiskInstalled()) {
                             nav.setSelectedItemId(R.id.repo_nav);
                         }
                     }
-                    case "settings" -> nav.setSelectedItemId(R.id.settings_fragment);
+                    case "settings" ->
+                            navController.navigate(HomeFragmentDirections.actionHomeFragmentToSettingsFragment());
                     default -> {
                         var data = intent.getData();
                         if (data != null && Objects.equals(data.getScheme(), "module")) {
@@ -253,6 +256,7 @@ public class MainActivity extends BaseActivity implements RepoLoader.RepoListene
             if (!ConfigManager.isBinderAlive()) {
                 nav.getMenu().removeItem(R.id.logs_fragment);
                 nav.getMenu().removeItem(R.id.modules_nav);
+                nav.getMenu().removeItem(R.id.apps_nav);
                 if (!ConfigManager.isMagiskInstalled()) {
                     nav.getMenu().removeItem(R.id.repo_nav);
                 }

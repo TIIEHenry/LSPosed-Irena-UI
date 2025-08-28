@@ -25,6 +25,10 @@
         <item quantity="one">%d module enabled</item>
         <item quantity="other">%d modules enabled</item>
     </plurals>
+    <string name="Apps">Apps</string>
+    <plurals name="affected_apps_count">
+        <item quantity="other">%d apps affected</item>
+    </plurals>
     <string name="Logs">Logs</string>
     <string name="Settings">Settings</string>
     <string name="feedback_or_suggestion">Feedback or suggestion</string>

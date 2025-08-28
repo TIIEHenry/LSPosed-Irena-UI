@@ -16,43 +16,51 @@
   ~
   ~ Copyright (C) 2021 LSPosed Contributors
   -->
-
 <navigation xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/nav_graph"
-    app:startDestination="@id/main_fragment">
+    android:id="@+id/apps_nav"
+    app:startDestination="@id/affected_apps_fragment">
     <fragment
-        android:id="@+id/main_fragment"
-        android:name="org.lsposed.manager.ui.fragment.HomeFragment"
-        android:label="main">
-
+        android:id="@+id/affected_apps_fragment"
+        android:name="org.lsposed.manager.ui.fragment.AffectedAppsFragment"
+        android:label="affected_apps">
         <action
-            android:id="@+id/action_home_fragment_to_settings_fragment"
-            app:destination="@id/settings_fragment"
+            android:id="@+id/action_affected_apps_fragment_to_app_modules_fragment"
+            app:destination="@id/app_modules_fragment"
+            app:enterAnim="@anim/fragment_enter"
+            app:exitAnim="@anim/fragment_exit"
+            app:popEnterAnim="@anim/fragment_enter_pop"
+            app:popExitAnim="@anim/fragment_exit_pop" />
+        <action
+            android:id="@+id/action_app_modules_fragment_to_module_app_list_fragment"
+            app:destination="@id/app_list_fragment"
             app:enterAnim="@anim/fragment_enter"
             app:exitAnim="@anim/fragment_exit"
             app:popEnterAnim="@anim/fragment_enter_pop"
             app:popExitAnim="@anim/fragment_exit_pop" />
     </fragment>
+    <fragment
+        android:id="@+id/app_modules_fragment"
+        android:name="org.lsposed.manager.ui.fragment.AppModulesFragment"
+        android:label="app_modules">
+        <argument
+            android:name="appPackageName"
+            app:argType="string" />
+
+        <argument
+            android:name="appUserId"
+            app:argType="integer" />
+        <deepLink
+            android:id="@+id/repo_item_deeplink"
+            app:uri="lsposed://app_modules?appPackageName={appPackageName}&amp;appUserId={appUserId}" />
+    </fragment>
     <action
-        android:id="@+id/action_settings_fragment_to_home_fragment"
-        app:destination="@id/main_fragment"
+        android:id="@+id/action_app_module_list_fragment_to_app_modules_fragment"
+        app:destination="@id/affected_apps_fragment"
         app:enterAnim="@anim/fragment_enter"
         app:exitAnim="@anim/fragment_exit"
         app:popEnterAnim="@anim/fragment_enter_pop"
         app:popExitAnim="@anim/fragment_exit_pop"
         app:popUpTo="@id/main_fragment"
         app:popUpToInclusive="true" />
-    <fragment
-        android:id="@+id/logs_fragment"
-        android:name="org.lsposed.manager.ui.fragment.LogsFragment"
-        android:label="logs" />
-    <fragment
-        android:id="@+id/settings_fragment"
-        android:name="org.lsposed.manager.ui.fragment.SettingsFragment"
-        android:label="settings" />
-
-    <include app:graph="@navigation/modules_nav" />
-    <include app:graph="@navigation/apps_nav" />
-    <include app:graph="@navigation/repo_nav" />
 </navigation>

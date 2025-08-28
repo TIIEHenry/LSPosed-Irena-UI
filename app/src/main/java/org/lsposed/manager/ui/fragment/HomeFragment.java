@@ -73,6 +73,10 @@ public class HomeFragment extends BaseFragment implements MenuProvider {
 
     @Override
     public void onPrepareMenu(Menu menu) {
+        menu.findItem(R.id.menu_settings).setOnMenuItemClickListener(v -> {
+            safeNavigate(HomeFragmentDirections.actionHomeFragmentToSettingsFragment());
+            return true;
+        });
         menu.findItem(R.id.menu_about).setOnMenuItemClickListener(v -> {
             showAbout();
             return true;
