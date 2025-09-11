@@ -6,6 +6,7 @@ import androidx.annotation.NonNull;
 
 import org.lsposed.lspd.nativebridge.HookBridge;
 
+import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
@@ -283,5 +284,19 @@ public class LSPosedBridge {
             };
         }
         throw new HookFailedError("Cannot hook " + hookMethod);
+    }
+
+    public static <T> XposedInterface.MethodUnhooker<Constructor<T>>
+    doHookClassInitializer(Class<T> clazz, int priority, Class<? extends XposedInterface.Hooker> hooker) {
+        if (clazz.getClassLoader() == LSPosedContext.class.getClassLoader()) {
+            throw new IllegalArgumentException("Do not allow hooking inner classes");
+        }
+        synchronized (clazz) {
+            Constructor<T> classInitializerConstructor = HookBridge.findClassInitializer(clazz);
+            if (classInitializerConstructor == null) {
+                throw new IllegalArgumentException("Cannot find class initializer for " + clazz);
+            }
+            return doHook(classInitializerConstructor, priority, hooker);
+        }
     }
 }

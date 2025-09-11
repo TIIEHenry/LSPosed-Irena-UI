@@ -154,6 +154,7 @@ LSP_DEF_NATIVE_METHOD(jboolean, HookBridge, unhookMethod, jboolean useModernApi,
     } else {
         for (auto i = hook_item->legacy_callbacks.begin(); i != hook_item->legacy_callbacks.end(); ++i) {
             if (env->IsSameObject(i->second, callback)) {
+                env->DeleteGlobalRef(i->second);
                 hook_item->legacy_callbacks.erase(i);
                 return JNI_TRUE;
             }
@@ -177,7 +178,7 @@ LSP_DEF_NATIVE_METHOD(jobject, HookBridge, invokeOriginalMethod, jobject hookMet
     return env->CallObjectMethod(hook_item ? hook_item->GetBackup() : hookMethod, invoke, thiz, args);
 }
 
-LSP_DEF_NATIVE_METHOD(jobject, HookBridge, getClassInitializer, jclass cls) {
+LSP_DEF_NATIVE_METHOD(jobject, HookBridge, findClassInitializer, jclass cls) {
     auto clinit = env->GetStaticMethodID(cls, "<clinit>", "()V");
     return env->ToReflectedMethod(cls, clinit, JNI_TRUE);
 }

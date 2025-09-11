@@ -53,7 +53,7 @@
     <string name="selinux_policy_not_loaded_summary">SEPolicy не завантажено належним чином</string>
     <string name="selinux_policy_not_loaded"><![CDATA[Деякі функції не працюватимуть.<br/>Будь ласка, повідомте про це на <a href="https://github.com/topjohnwu/Magisk/issues"><b>Magisk</b></a> розробнику.]]></string>
     <string name="system_inject_fail_summary">Помилка ін\'єкції System Framework</string>
-    <string name="system_inject_fail"><![CDATA[Це рідкісна проблема, яка може бути спричинена <b>Magisk</b> або деякими неякісними модулями Magisk.<br/>Спробуйте вимкнути всі модулі Magisk, крім Riru та LSPosed, або надішліть повний звіт розробникам.]]></string>
+    <string name="system_inject_fail"><![CDATA[Це рідкісна проблема, яка може бути спричинена <b>Magisk</b> або деякими неякісними модулями Magisk.<br/>Спробуйте вимкнути всі модулі Magisk, крім Zygisk та LSPosed, або надішліть повний звіт розробникам.]]></string>
     <string name="system_prop_incorrect_summary">Неправильні системні налаштування</string>
     <string name="system_prop_incorrect"><![CDATA[Деякі необхідні параметри системи видалені або змінені.<br/>Модулі можуть не працювати належним чином.]]></string>
     <string name="need_update">Потрібно оновити</string>

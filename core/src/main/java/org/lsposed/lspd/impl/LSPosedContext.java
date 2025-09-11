@@ -210,13 +210,13 @@ public class LSPosedContext implements XposedInterface {
     @NonNull
     @Override
     public <T> MethodUnhooker<Constructor<T>> hookClassInitializer(@NonNull Class<T> origin, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHook(HookBridge.getClassInitializer(origin), PRIORITY_DEFAULT, hooker);
+        return LSPosedBridge.doHookClassInitializer(origin, PRIORITY_DEFAULT, hooker);
     }
 
     @NonNull
     @Override
     public <T> MethodUnhooker<Constructor<T>> hookClassInitializer(@NonNull Class<T> origin, int priority, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHook(HookBridge.getClassInitializer(origin), priority, hooker);
+        return LSPosedBridge.doHookClassInitializer(origin, priority, hooker);
     }
 
     @Nullable

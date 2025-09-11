@@ -15,7 +15,7 @@ public class HookBridge {
 
     public static native <T> T allocateObject(Class<T> clazz) throws InstantiationException;
 
-    public static native <T> Constructor<T> getClassInitializer(Class<T> clazz);
+    public static native <T> Constructor<T> findClassInitializer(Class<T> clazz);
 
     public static native Object invokeOriginalMethod(Executable method, Object thisObject, Object... args) throws IllegalAccessException, IllegalArgumentException, InvocationTargetException;
 

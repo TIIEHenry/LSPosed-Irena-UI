@@ -49,7 +49,7 @@
     <string name="selinux_policy_not_loaded_summary">SEPolicy is nie behoorlik gelaai nie</string>
     <string name="selinux_policy_not_loaded"><![CDATA[Sommige kenmerke sal nie werk nie.<br/>Rapporteer dit asseblief aan <a href="https://github.com/topjohnwu/Magisk/issues"><b>Magisk</b></a> ontwikkelaar.]]></string>
     <string name="system_inject_fail_summary">Stelselraamwerk-inspuiting het misluk</string>
-    <string name="system_inject_fail"><![CDATA[Dit is skaars en kan veroorsaak word deur <b>Magisk</b> of sommige Magisk-modules van lae gehalte.<br/>Probeer asseblief om Magisk-modules anders as Riru en LSPosed te deaktiveer of dien volledige log aan ontwikkelaars in.]]></string>
+    <string name="system_inject_fail"><![CDATA[Dit is skaars en kan veroorsaak word deur <b>Magisk</b> of sommige Magisk-modules van lae gehalte.<br/>Probeer asseblief om Magisk-modules anders as Zygisk en LSPosed te deaktiveer of dien volledige log aan ontwikkelaars in.]]></string>
     <string name="system_prop_incorrect_summary">Stelselstut is verkeerd</string>
     <string name="system_prop_incorrect"><![CDATA[Sommige nodige stelseleienskappe is uitgevee of gewysig.<br/>Modules kan soms ongeldig word.]]></string>
     <string name="need_update">Need to update</string>

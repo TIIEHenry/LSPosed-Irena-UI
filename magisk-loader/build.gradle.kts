@@ -21,6 +21,7 @@ import org.apache.commons.codec.binary.Hex
 import org.apache.tools.ant.filters.FixCrLfFilter
 import org.apache.tools.ant.filters.ReplaceTokens
 import org.gradle.kotlin.dsl.register
+import org.gradle.kotlin.dsl.support.serviceOf
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 
@@ -75,26 +76,27 @@ android {
     }
 
     productFlavors {
-        all {
-            externalNativeBuild {
-                cmake {
-                    arguments += "-DMODULE_NAME=${name.lowercase()}_$moduleBaseId"
-                    arguments += "-DAPI=${name.lowercase()}"
-                }
-            }
-        }
-
         create("Zygisk") {
             dimension = "api"
-            externalNativeBuild {
-                cmake {
-                    arguments += "-DAPI_VERSION=1"
-                }
-            }
         }
     }
     namespace = "org.lsposed.lspd"
 }
+
+cmaker {
+    default {
+        arguments += arrayOf(
+            "-DMODULE_NAME=${name.lowercase()}_$moduleBaseId",
+            "-DAPI=${name.lowercase()}",
+            "-DAPI_VERSION=1",
+            "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON",
+            "-DCMAKE_VISIBILITY_INLINES_HIDDEN=ON",
+            "-DCMAKE_CXX_VISIBILITY_PRESET=hidden",
+            "-DCMAKE_C_VISIBILITY_PRESET=hidden",
+        )
+    }
+}
+
 abstract class Injected @Inject constructor(val magiskDir: String) {
     @get:Inject
     abstract val factory: ObjectFactory
@@ -173,6 +175,9 @@ fun afterEval() = android.applicationVariants.forEach { variant ->
             from(layout.buildDirectory.dir("intermediates/stripped_native_libs/$variantCapped/strip${variantCapped}DebugSymbols/out/lib")) {
                 include("**/liblspd.so")
             }
+            from(project(":dex2oat").layout.buildDirectory.dir("intermediates/cmake/$buildTypeLowered/obj")) {
+                include("**/libpreload.so")
+            }
         }
         into("bin") {
             from(project(":dex2oat").layout.buildDirectory.dir("intermediates/cmake/$buildTypeLowered/obj")) {
@@ -225,26 +230,26 @@ fun afterEval() = android.applicationVariants.forEach { variant ->
         dependsOn(pushTask)
         commandLine(
             adb, "shell", "su", "-c",
-            "magisk --install-module /data/local/tmp/${zipFileName}"
+            "'magisk --install-module /data/local/tmp/${zipFileName}'"
         )
     })
     tasks.register<Exec>("flashMagiskAndReboot${variantCapped}", fun Exec.() {
         group = "LSPosed"
         dependsOn(flashMagiskTask)
-        commandLine(adb,"reboot")
+        commandLine(adb, "reboot")
     })
     val flashKsuTask = tasks.register<Exec>("flashKsu${variantCapped}", fun Exec.() {
         group = "LSPosed"
         dependsOn(pushTask)
         commandLine(
             adb, "shell", "su", "-c",
-            "ksud module install /data/local/tmp/${zipFileName}"
+            "'ksud module install /data/local/tmp/${zipFileName}'"
         )
     })
     tasks.register<Exec>("flashKsuAndReboot${variantCapped}", fun Exec.() {
         group = "LSPosed"
         dependsOn(flashKsuTask)
-        commandLine(adb, "shell", "su", "-c", "/system/bin/svc", "power", "reboot")
+        commandLine(adb, "reboot")
     })
 }
 
@@ -301,12 +306,26 @@ val pushApk = tasks.register<Exec>("pushApk") {
     workingDir(project(":app").layout.buildDirectory.dir("outputs/apk/debug"))
     commandLine(adb, "push", "app-debug.apk", tmpApk)
 }
-val openApp = tasks.register<Exec>("openApp") {
+tasks.register<Exec>("openApp") {
     group = "LSPosed"
+    val apiLevelOutput = ByteArrayOutputStream()
+    serviceOf<ExecOperations>().exec {
+        commandLine("adb", "shell", "getprop", "ro.build.version.sdk")
+        standardOutput = apiLevelOutput
+    }
+    val apiLevel = apiLevelOutput.toString().trim().toInt()
+    val secretCodeAction = if (apiLevel >= 29) {
+        "android.telephony.action.SECRET_CODE"
+    } else {
+        "android.provider.Telephony.SECRET_CODE"
+    }
     commandLine(
         adb, "shell",
-        "am", "start", "-c", "org.lsposed.manager.LAUNCH_MANAGER",
-        "com.android.shell/.BugreportWarningActivity"
+        "su", "-c",
+        "am", "broadcast",
+        "-a", secretCodeAction,
+        "-d", "android_secret_code://5776733",
+        "android"
     )
 }
 tasks.register("reRunApp", fun Task.() {

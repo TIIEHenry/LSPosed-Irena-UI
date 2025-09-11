@@ -49,7 +49,7 @@
     <string name="selinux_policy_not_loaded_summary">Selinux policy no está cargado correctamente</string>
     <string name="selinux_policy_not_loaded"><![CDATA[Algunas funciones no funcionarán.<br/>Informa de ello al desarrollador de <a href="https://github.com/topjohnwu/Magisk/issues"><b>Magisk</b></a> .]]></string>
     <string name="system_inject_fail_summary">System Framework injection failed</string>
-    <string name="system_inject_fail"><![CDATA[This is rare and may be caused by <b>Magisk</b> or some low-quality Magisk modules.<br/>Please try to disable Magisk modules other than Riru and LSPosed or submit full log to developers.]]></string>
+    <string name="system_inject_fail"><![CDATA[This is rare and may be caused by <b>Magisk</b> or some low-quality Magisk modules.<br/>Please try to disable Magisk modules other than Zygisk and LSPosed or submit full log to developers.]]></string>
     <string name="system_prop_incorrect_summary">System prop incorrect</string>
     <string name="system_prop_incorrect"><![CDATA[Some necessary system properties deleted or modified.<br/>Modules may invalidate occasionally.]]></string>
     <string name="need_update">Need to update</string>

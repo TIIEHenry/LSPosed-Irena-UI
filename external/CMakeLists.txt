@@ -65,7 +65,7 @@ set(LIBCXX_EXPORT_FLAGS
         -D_LIBCPP_HAS_NO_LOCALIZATION
         )
 set(LIBCXX_FLAGS
-        -fvisibility-global-new-delete-hidden
+        -fvisibility-global-new-delete=force-hidden
         -fvisibility=hidden
         -fvisibility-inlines-hidden
         )

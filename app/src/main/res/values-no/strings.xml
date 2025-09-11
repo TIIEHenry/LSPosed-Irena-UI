@@ -49,7 +49,7 @@
     <string name="selinux_policy_not_loaded_summary">SEPolicy er ikke lastet riktig</string>
     <string name="selinux_policy_not_loaded"><![CDATA[Noen funksjoner vil ikke fungere.<br/>Vennligst rapporter dette til <a href="https://github.com/topjohnwu/Magisk/issues"><b>Magisk</b></a> utvikler.]]></string>
     <string name="system_inject_fail_summary">Systemets ramme-injeksjon mislyktes</string>
-    <string name="system_inject_fail"><![CDATA[Dette er sjeldent og kan forårsakes av <b>Magisk</b> eller noen lavkvalitets magnetiske moduler.<br/>Prøv å deaktivere andre Magiske moduler enn Riru og LSPosed eller sende full logg til utviklere.]]></string>
+    <string name="system_inject_fail"><![CDATA[Dette er sjeldent og kan forårsakes av <b>Magisk</b> eller noen lavkvalitets magnetiske moduler.<br/>Prøv å deaktivere andre Magiske moduler enn Zygisk og LSPosed eller sende full logg til utviklere.]]></string>
     <string name="system_prop_incorrect_summary">Feil i systemprop</string>
     <string name="system_prop_incorrect"><![CDATA[Noen nødvendige systemegenskaper kan slettes eller endres.<br/>Moduler kan godkjennes av og til.]]></string>
     <string name="need_update">Må oppdatere</string>

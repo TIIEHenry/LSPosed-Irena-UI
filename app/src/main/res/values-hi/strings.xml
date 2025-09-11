@@ -49,7 +49,7 @@
     <string name="selinux_policy_not_loaded_summary">SEPolicy ठीक से लोड नहीं है</string>
     <string name="selinux_policy_not_loaded"><![CDATA[कुछ सुविधाएँ काम नहीं करेंगी।<br/>कृपया इसकी सूचना <a href="https://github.com/topjohnwu/Magisk/issues"><b>मैजिक</b></a> डेवलपर को दें।]]></string>
     <string name="system_inject_fail_summary">सिस्टम फ्रेमवर्क इंजेक्शन विफल</string>
-    <string name="system_inject_fail"><![CDATA[यह दुर्लभ है और <b>Magisk</b> या कुछ निम्न-गुणवत्ता वाले Magisk मॉड्यूल के कारण हो सकता है।<br/>कृपया Riru और LSPosed के अलावा अन्य Magisk मॉड्यूल को अक्षम करने का प्रयास करें या डेवलपर्स को पूर्ण लॉग सबमिट करें।]]></string>
+    <string name="system_inject_fail"><![CDATA[यह दुर्लभ है और <b>Magisk</b> या कुछ निम्न-गुणवत्ता वाले Magisk मॉड्यूल के कारण हो सकता है।<br/>कृपया Zygisk और LSPosed के अलावा अन्य Magisk मॉड्यूल को अक्षम करने का प्रयास करें या डेवलपर्स को पूर्ण लॉग सबमिट करें।]]></string>
     <string name="system_prop_incorrect_summary">सिस्टम प्रोप गलत</string>
     <string name="system_prop_incorrect"><![CDATA[कुछ आवश्यक सिस्टम गुण हटा दिए गए या संशोधित किए गए।<br/>मॉड्यूल कभी-कभी अमान्य हो सकते हैं।]]></string>
     <string name="need_update">अद्यतन करने की आवश्यकता है</string>
