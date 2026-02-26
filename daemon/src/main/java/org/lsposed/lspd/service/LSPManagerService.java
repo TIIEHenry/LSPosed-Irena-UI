@@ -525,6 +525,11 @@ public class LSPManagerService extends ILSPManagerService.Stub {
     }
 
     @Override
+    public void removeBlockedScopeRequest(String packageName) {
+        ConfigManager.getInstance().removeBlockedScopeRequest(packageName);
+    }
+
+    @Override
     public boolean performDexOptMode(String packageName) throws RemoteException {
         return PackageService.performDexOptMode(packageName);
     }

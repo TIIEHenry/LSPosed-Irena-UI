@@ -5,6 +5,7 @@ import android.app.ActivityThread;
 import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.os.Build;
+import android.os.DeadSystemException;
 import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.os.RemoteException;
@@ -31,6 +32,9 @@ import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.lang.reflect.Proxy;
 import java.nio.ByteBuffer;
+import java.io.PrintWriter;
+import java.io.StringWriter;
+import java.net.UnknownHostException;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -302,13 +306,45 @@ public class LSPosedContext implements XposedInterface {
     }
 
     @Override
-    public void log(@NonNull String message) {
-        Log.i(TAG, mPackageName + ": " + message);
+    public void log(int priority, @Nullable String tag, @NonNull String message, @Nullable Throwable throwable) {
+        if (message.isEmpty() && throwable == null) {
+            return;
+        }
+
+        var estimatedLength = Math.max(0xFC2 - (tag == null ? 0 : tag.length()), 100);
+        var output = new StringWriter(estimatedLength);
+        var writer = new PrintWriter(output);
+
+        var moduleTag = String.valueOf(tag);
+        writer.println(String.format("[%s,%s] %s", mPackageName, moduleTag, message));
+
+        if (throwable != null) {
+            Throwable candidate;
+            for (candidate = throwable; candidate != null && !(candidate instanceof UnknownHostException); candidate = candidate.getCause()) {
+                if (candidate instanceof DeadSystemException) {
+                    writer.println("DeadSystemException: The system died; earlier logs will point to the root cause");
+                    break;
+                }
+            }
+            if (candidate == null) {
+                throwable.printStackTrace(writer);
+            }
+        }
+
+        writer.flush();
+        Log.println(priority, "LSPosedFramework", output.toString());
     }
 
     @Override
+    @Deprecated
+    public void log(@NonNull String message) {
+        log(Log.INFO, "null", message, null);
+    }
+
+    @Override
+    @Deprecated
     public void log(@NonNull String message, @NonNull Throwable throwable) {
-        Log.e(TAG, mPackageName + ": " + message, throwable);
+        log(Log.ERROR, "null", message, throwable);
     }
 
     @Override

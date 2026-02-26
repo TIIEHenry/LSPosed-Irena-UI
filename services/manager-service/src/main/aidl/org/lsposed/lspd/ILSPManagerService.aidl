@@ -87,4 +87,6 @@ interface ILSPManagerService {
     boolean enableStatusNotification() = 47;
 
     void setEnableStatusNotification(boolean enable) = 48;
+
+    void removeBlockedScopeRequest(String packageName) = 49;
 }
