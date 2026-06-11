@@ -53,6 +53,7 @@ import org.lsposed.lspd.models.Application;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
+import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -76,6 +77,63 @@ public class PackageService {
 
     private static IPackageManager pm = null;
     private static IBinder binder = null;
+    private static final Method sGetInstalledPackages =
+            Build.VERSION.SDK_INT >= 37 ? findGetInstalledPackages() : null;
+
+    private static Method findGetInstalledPackages() {
+        for (var method : IPackageManager.class.getDeclaredMethods()) {
+            var params = method.getParameterTypes();
+            if ("getInstalledPackages".equals(method.getName())
+                    && params.length == 2
+                    && params[0] == long.class
+                    && params[1] == int.class) {
+                method.setAccessible(true);
+                return method;
+            }
+        }
+        Log.e(TAG, "getInstalledPackages method not found");
+        return null;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static ParceledListSlice<PackageInfo> getInstalledPackagesReflect(IPackageManager pm, int flags, int userId) throws RemoteException {
+        if (sGetInstalledPackages == null) {
+            return null;
+        }
+        try {
+            return (ParceledListSlice<PackageInfo>) sGetInstalledPackages.invoke(pm, (long) flags, userId);
+        } catch (InvocationTargetException e) {
+            var cause = e.getCause();
+            if (cause instanceof RemoteException remoteException) throw remoteException;
+            if (cause instanceof RuntimeException runtimeException) throw runtimeException;
+            if (cause instanceof Error error) throw error;
+            var remoteException = new RemoteException("getInstalledPackages failed");
+            remoteException.initCause(cause);
+            throw remoteException;
+        } catch (IllegalAccessException e) {
+            var remoteException = new RemoteException("getInstalledPackages inaccessible");
+            remoteException.initCause(e);
+            throw remoteException;
+        }
+    }
+
+    private static List<PackageInfo> getInstalledPackages(IPackageManager pm, int flags, int userId) throws RemoteException {
+        ParceledListSlice<PackageInfo> slice;
+        if (Build.VERSION.SDK_INT >= 37) {
+            slice = getInstalledPackagesReflect(pm, flags, userId);
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            slice = pm.getInstalledPackages((long) flags, userId);
+        } else {
+            slice = pm.getInstalledPackages(flags, userId);
+        }
+        return slice == null ? Collections.emptyList() : slice.getList();
+    }
+
+    static List<PackageInfo> getInstalledPackages(int flags, int userId) throws RemoteException {
+        IPackageManager pm = getPackageManager();
+        if (pm == null) return Collections.emptyList();
+        return getInstalledPackages(pm, flags, userId);
+    }
 
     static boolean isAlive() {
         var pm = getPackageManager();
@@ -145,14 +203,8 @@ public class PackageService {
         if (pm == null) return ParcelableListSlice.emptyList();
         for (var user : UserService.getUsers()) {
             // in case pkginfo of other users in primary user
-            ParceledListSlice<PackageInfo> infos;
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                infos = pm.getInstalledPackages((long) flags, user.id);
-            } else {
-                infos = pm.getInstalledPackages(flags, user.id);
-            }
-            res.addAll(infos
-                    .getList().parallelStream()
+            res.addAll(getInstalledPackages(pm, flags, user.id)
+                    .parallelStream()
                     .filter(info -> info.applicationInfo != null && info.applicationInfo.uid / PER_USER_RANGE == user.id)
                     .filter(info -> {
                         try {
@@ -205,6 +257,8 @@ public class PackageService {
     }
 
     public static boolean isPackageAvailable(String packageName, int userId, boolean ignoreHidden) throws RemoteException {
+        IPackageManager pm = getPackageManager();
+        if (pm == null) return false;
         return pm.isPackageAvailable(packageName, userId) || (ignoreHidden && pm.getApplicationHiddenSettingAsUser(packageName, userId));
     }
 

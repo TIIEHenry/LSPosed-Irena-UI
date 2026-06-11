@@ -33,11 +33,13 @@ import io.github.libxposed.api.XposedInterface;
 // when a package is loaded for an existing process, trigger the callbacks as well
 public class LoadedApkCtorHooker implements XposedInterface.Hooker {
 
-    public static void after(XposedInterface.AfterHookCallback callback) {
+    @Override
+    public Object intercept(XposedInterface.Chain chain) throws Throwable {
+        var result = chain.proceed();
         Hookers.logD("LoadedApk#<init> starts");
 
         try {
-            LoadedApk loadedApk = (LoadedApk) callback.getThisObject();
+            LoadedApk loadedApk = (LoadedApk) chain.getThisObject();
             assert loadedApk != null;
             String packageName = loadedApk.getPackageName();
             Object mAppDir = XposedHelpers.getObjectField(loadedApk, "mAppDir");
@@ -47,30 +49,36 @@ public class LoadedApkCtorHooker implements XposedInterface.Hooker {
                 XResources.setPackageNameForResDir(packageName, loadedApk.getResDir());
             }
 
+            boolean includeCode = XposedHelpers.getBooleanField(loadedApk, "mIncludeCode");
             if (packageName.equals("android")) {
                 if (XposedInit.startsSystemServer) {
                     Hookers.logD("LoadedApk#<init> is android, skip: " + mAppDir);
-                    return;
+                    return result;
                 } else {
                     packageName = "system";
                 }
+            } else if (!includeCode) {
+                Hookers.logD("LoadedApk#<init> has no code, skip: " + mAppDir);
+                return result;
             }
 
             if (!XposedInit.loadedPackagesInProcess.add(packageName)) {
                 Hookers.logD("LoadedApk#<init> has been loaded before, skip: " + mAppDir);
-                return;
+                return result;
             }
 
             // OnePlus magic...
             if (Log.getStackTraceString(new Throwable()).
                     contains("android.app.ActivityThread$ApplicationThread.schedulePreload")) {
                 Hookers.logD("LoadedApk#<init> maybe oneplus's custom opt, skip");
-                return;
+                XposedInit.loadedPackagesInProcess.remove(packageName);
+                return result;
             }
 
             LoadedApkCreateCLHooker.addLoadedApk(loadedApk);
         } catch (Throwable t) {
             Hookers.logE("error when hooking LoadedApk.<init>", t);
         }
+        return result;
     }
 }

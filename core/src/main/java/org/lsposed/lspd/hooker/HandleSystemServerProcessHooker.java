@@ -39,7 +39,9 @@ public class HandleSystemServerProcessHooker implements XposedInterface.Hooker {
     public static volatile Callback callback = null;
 
     @SuppressLint("PrivateApi")
-    public static void after() {
+    @Override
+    public Object intercept(XposedInterface.Chain chain) throws Throwable {
+        var result = chain.proceed();
         Hookers.logD("ZygoteInit#handleSystemServerProcess() starts");
         try {
             // get system_server classLoader
@@ -47,10 +49,11 @@ public class HandleSystemServerProcessHooker implements XposedInterface.Hooker {
             // deopt methods in SYSTEMSERVERCLASSPATH
             PrebuiltMethodsDeopter.deoptSystemServerMethods(systemServerCL);
             var clazz = Class.forName("com.android.server.SystemServer", false, systemServerCL);
-            LSPosedHelper.hookAllMethods(StartBootstrapServicesHooker.class, clazz, "startBootstrapServices");
+            LSPosedHelper.hookAllMethods(new StartBootstrapServicesHooker(), clazz, "startBootstrapServices");
             if (callback != null) callback.onSystemServerLoaded(systemServerCL);
         } catch (Throwable t) {
             Hookers.logE("error when hooking systemMain", t);
         }
+        return result;
     }
 }

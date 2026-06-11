@@ -19,6 +19,8 @@
 
 import com.android.build.api.dsl.ApplicationExtension
 import com.android.ide.common.signing.KeystoreHelper
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.tasks.OutputDirectory
 import java.io.PrintStream
 
 plugins {
@@ -64,7 +66,6 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles("proguard-rules.pro")
         }
     }
 
@@ -77,20 +78,25 @@ android {
     namespace = "org.lsposed.daemon"
 }
 
-android.applicationVariants.all {
-    val variantCapped = name.replaceFirstChar { it.uppercase() }
-    val variantLowered = name.lowercase()
+abstract class GenerateSignInfoTask : DefaultTask() {
+    @get:OutputDirectory
+    abstract val outputDir: DirectoryProperty
+}
 
-    val outSrcDir =
-        layout.buildDirectory.dir("generated/source/signInfo/${variantLowered}").get()
-    val signInfoTask = tasks.register("generate${variantCapped}SignInfo") {
-        dependsOn(":app:validateSigning${variantCapped}")
+androidComponents.onVariants(androidComponents.selector().all()) { variant ->
+    val variantCapped = variant.name.replaceFirstChar { it.uppercase() }
+    val buildType = checkNotNull(variant.buildType)
+    val buildTypeCapped = buildType.replaceFirstChar { it.uppercase() }
+    val buildTypeLowered = buildType.lowercase()
+
+    val signInfoTask = tasks.register<GenerateSignInfoTask>("generate${variantCapped}SignInfo") {
+        outputDir.set(layout.buildDirectory.dir("generated/source/signInfo/${variant.name.lowercase()}"))
+        dependsOn(":app:validateSigning${buildTypeCapped}")
         val sign = rootProject.project(":app").extensions
             .getByType(ApplicationExtension::class.java)
-            .buildTypes.named(variantLowered).get().signingConfig
-        val outSrc = file("$outSrcDir/org/lsposed/lspd/util/SignInfo.java")
-        outputs.file(outSrc)
+            .buildTypes.named(buildTypeLowered).get().signingConfig
         doLast {
+            val outSrc = outputDir.file("org/lsposed/lspd/util/SignInfo.java").get().asFile
             outSrc.parentFile.mkdirs()
             val certificateInfo = KeystoreHelper.getCertificateInfo(
                 sign?.storeType,
@@ -110,11 +116,15 @@ android.applicationVariants.all {
             )
         }
     }
-    registerJavaGeneratingTask(signInfoTask, outSrcDir.asFile)
+    variant.sources.java?.addGeneratedSourceDirectory(
+        signInfoTask,
+        GenerateSignInfoTask::outputDir
+    )
 }
 
 dependencies {
     implementation(projects.libxposed.service)
+    compileOnly(projects.libxposed.api)
     implementation(libs.agp.apksig)
     implementation(libs.commons.lang3)
     implementation(projects.hiddenapi.bridge)

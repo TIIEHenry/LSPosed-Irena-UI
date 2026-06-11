@@ -15,23 +15,16 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import org.lsposed.lspd.core.BuildConfig;
-import org.lsposed.lspd.impl.utils.LSPosedDexParser;
 import org.lsposed.lspd.models.Module;
-import org.lsposed.lspd.nativebridge.HookBridge;
 import org.lsposed.lspd.nativebridge.NativeAPI;
 import org.lsposed.lspd.service.ILSPInjectedModuleService;
 import org.lsposed.lspd.util.LspModuleClassLoader;
 
 import java.io.File;
 import java.io.FileNotFoundException;
-import java.io.IOException;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Executable;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
-import java.lang.reflect.Proxy;
-import java.nio.ByteBuffer;
 import java.io.PrintWriter;
 import java.io.StringWriter;
 import java.net.UnknownHostException;
@@ -42,8 +35,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
-import io.github.libxposed.api.errors.XposedFrameworkError;
-import io.github.libxposed.api.utils.DexParser;
+import io.github.libxposed.api.error.XposedFrameworkError;
 
 
 @SuppressLint("NewApi")
@@ -60,12 +52,15 @@ public class LSPosedContext implements XposedInterface {
     private final String mPackageName;
     private final ApplicationInfo mApplicationInfo;
     private final ILSPInjectedModuleService service;
+    private final ExceptionMode mDefaultExceptionMode;
     private final Map<String, SharedPreferences> mRemotePrefs = new ConcurrentHashMap<>();
 
-    LSPosedContext(String packageName, ApplicationInfo applicationInfo, ILSPInjectedModuleService service) {
+    LSPosedContext(String packageName, ApplicationInfo applicationInfo, ILSPInjectedModuleService service,
+                   ExceptionMode defaultExceptionMode) {
         this.mPackageName = packageName;
         this.mApplicationInfo = applicationInfo;
         this.service = service;
+        this.mDefaultExceptionMode = defaultExceptionMode;
     }
 
     public static void callOnPackageLoaded(XposedModuleInterface.PackageLoadedParam param) {
@@ -73,17 +68,27 @@ public class LSPosedContext implements XposedInterface {
             try {
                 module.onPackageLoaded(param);
             } catch (Throwable t) {
-                Log.e(TAG, "Error when calling onPackageLoaded of " + module.getApplicationInfo().packageName, t);
+                Log.e(TAG, "Error when calling onPackageLoaded of " + module.getModuleApplicationInfo().packageName, t);
             }
         }
     }
 
-    public static void callOnSystemServerLoaded(XposedModuleInterface.SystemServerLoadedParam param) {
+    public static void callOnPackageReady(XposedModuleInterface.PackageReadyParam param) {
         for (XposedModule module : modules) {
             try {
-                module.onSystemServerLoaded(param);
+                module.onPackageReady(param);
             } catch (Throwable t) {
-                Log.e(TAG, "Error when calling onSystemServerLoaded of " + module.getApplicationInfo().packageName, t);
+                Log.e(TAG, "Error when calling onPackageReady of " + module.getModuleApplicationInfo().packageName, t);
+            }
+        }
+    }
+
+    public static void callOnSystemServerStarting(XposedModuleInterface.SystemServerStartingParam param) {
+        for (XposedModule module : modules) {
+            try {
+                module.onSystemServerStarting(param);
+            } catch (Throwable t) {
+                Log.e(TAG, "Error when calling onSystemServerStarting of " + module.getModuleApplicationInfo().packageName, t);
             }
         }
     }
@@ -106,7 +111,9 @@ public class LSPosedContext implements XposedInterface {
                 Log.e(TAG, "  This may cause strange issues and must be fixed by the module developer.");
                 return false;
             }
-            var ctx = new LSPosedContext(module.packageName, module.applicationInfo, module.service);
+            module.file.moduleLibraryNames.forEach(NativeAPI::recordNativeEntrypoint);
+            var defaultExceptionMode = module.file.exceptionPassthrough ? ExceptionMode.PASSTHROUGH : ExceptionMode.PROTECTIVE;
+            var ctx = new LSPosedContext(module.packageName, module.applicationInfo, module.service, defaultExceptionMode);
             for (var entry : module.file.moduleClassNames) {
                 var moduleClass = mcl.loadClass(entry);
                 Log.d(TAG, "  Loading class " + moduleClass);
@@ -115,8 +122,9 @@ public class LSPosedContext implements XposedInterface {
                     continue;
                 }
                 try {
-                    var moduleEntry = moduleClass.getConstructor(XposedInterface.class, XposedModuleInterface.ModuleLoadedParam.class);
-                    var moduleContext = (XposedModule) moduleEntry.newInstance(ctx, new XposedModuleInterface.ModuleLoadedParam() {
+                    var moduleContext = (XposedModule) moduleClass.getConstructor().newInstance();
+                    moduleContext.attachFramework(ctx);
+                    moduleContext.onModuleLoaded(new XposedModuleInterface.ModuleLoadedParam() {
                         @Override
                         public boolean isSystemServer() {
                             return isSystemServer;
@@ -133,7 +141,6 @@ public class LSPosedContext implements XposedInterface {
                     Log.e(TAG, "    Failed to load class " + moduleClass, e);
                 }
             }
-            module.file.moduleLibraryNames.forEach(NativeAPI::recordNativeEntrypoint);
             Log.d(TAG, "Loaded module " + module.packageName + ": " + ctx);
         } catch (Throwable e) {
             Log.d(TAG, "Loading module " + module.packageName, e);
@@ -160,149 +167,46 @@ public class LSPosedContext implements XposedInterface {
     }
 
     @Override
-    public int getFrameworkPrivilege() {
+    public long getFrameworkProperties() {
         try {
-            return service.getFrameworkPrivilege();
-        } catch (RemoteException ignored) {
-            return -1;
+            return service.getFrameworkProperties();
+        } catch (RemoteException e) {
+            throw new XposedFrameworkError(e);
         }
     }
 
     @Override
     @NonNull
-    public MethodUnhooker<Method> hook(@NonNull Method origin, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHook(origin, PRIORITY_DEFAULT, hooker);
+    public HookBuilder hook(@NonNull Executable origin) {
+        return LSPosedBridge.newHookBuilder(this, origin, mDefaultExceptionMode);
     }
 
     @Override
     @NonNull
-    public MethodUnhooker<Method> hook(@NonNull Method origin, int priority, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHook(origin, priority, hooker);
+    public HookBuilder hookClassInitializer(@NonNull Class<?> origin) {
+        return LSPosedBridge.newClassInitializerHookBuilder(this, origin, mDefaultExceptionMode);
     }
 
     @Override
-    @NonNull
-    public <T> MethodUnhooker<Constructor<T>> hook(@NonNull Constructor<T> origin, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHook(origin, PRIORITY_DEFAULT, hooker);
-    }
-
-    @Override
-    @NonNull
-    public <T> MethodUnhooker<Constructor<T>> hook(@NonNull Constructor<T> origin, int priority, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHook(origin, priority, hooker);
-    }
-
-    private static boolean doDeoptimize(@NonNull Executable method) {
-        if (Modifier.isAbstract(method.getModifiers())) {
-            throw new IllegalArgumentException("Cannot deoptimize abstract methods: " + method);
-        } else if (Proxy.isProxyClass(method.getDeclaringClass())) {
-            throw new IllegalArgumentException("Cannot deoptimize methods from proxy class: " + method);
-        }
-        return HookBridge.deoptimizeMethod(method);
-    }
-
-    @Override
-    public boolean deoptimize(@NonNull Method method) {
-        return doDeoptimize(method);
-    }
-
-    @Override
-    public <T> boolean deoptimize(@NonNull Constructor<T> constructor) {
-        return doDeoptimize(constructor);
+    public boolean deoptimize(@NonNull Executable executable) {
+        return LSPosedBridge.doDeoptimize(executable);
     }
 
     @NonNull
     @Override
-    public <T> MethodUnhooker<Constructor<T>> hookClassInitializer(@NonNull Class<T> origin, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHookClassInitializer(origin, PRIORITY_DEFAULT, hooker);
+    public Invoker<?, Method> getInvoker(@NonNull Method method) {
+        return LSPosedBridge.newInvoker(method);
     }
 
     @NonNull
     @Override
-    public <T> MethodUnhooker<Constructor<T>> hookClassInitializer(@NonNull Class<T> origin, int priority, @NonNull Class<? extends Hooker> hooker) {
-        return LSPosedBridge.doHookClassInitializer(origin, priority, hooker);
-    }
-
-    @Nullable
-    @Override
-    public Object invokeOrigin(@NonNull Method method, @Nullable Object thisObject, Object[] args) throws InvocationTargetException, IllegalArgumentException, IllegalAccessException {
-        return HookBridge.invokeOriginalMethod(method, thisObject, args);
+    public <T> CtorInvoker<T> getInvoker(@NonNull Constructor<T> constructor) {
+        return LSPosedBridge.newInvoker(constructor);
     }
 
     @Override
-    public <T> void invokeOrigin(@NonNull Constructor<T> constructor, @NonNull T thisObject, Object... args) throws InvocationTargetException, IllegalArgumentException, IllegalAccessException {
-        HookBridge.invokeOriginalMethod(constructor, thisObject, args);
-    }
-
-    private static char getTypeShorty(Class<?> type) {
-        if (type == int.class) {
-            return 'I';
-        } else if (type == long.class) {
-            return 'J';
-        } else if (type == float.class) {
-            return 'F';
-        } else if (type == double.class) {
-            return 'D';
-        } else if (type == boolean.class) {
-            return 'Z';
-        } else if (type == byte.class) {
-            return 'B';
-        } else if (type == char.class) {
-            return 'C';
-        } else if (type == short.class) {
-            return 'S';
-        } else if (type == void.class) {
-            return 'V';
-        } else {
-            return 'L';
-        }
-    }
-
-    private static char[] getExecutableShorty(Executable executable) {
-        var parameterTypes = executable.getParameterTypes();
-        var shorty = new char[parameterTypes.length + 1];
-        shorty[0] = getTypeShorty(executable instanceof Method ? ((Method) executable).getReturnType() : void.class);
-        for (int i = 1; i < shorty.length; i++) {
-            shorty[i] = getTypeShorty(parameterTypes[i - 1]);
-        }
-        return shorty;
-    }
-
-    @Nullable
-    @Override
-    public Object invokeSpecial(@NonNull Method method, @NonNull Object thisObject, Object... args) throws InvocationTargetException, IllegalArgumentException, IllegalAccessException {
-        if (Modifier.isStatic(method.getModifiers())) {
-            throw new IllegalArgumentException("Cannot invoke special on static method: " + method);
-        }
-        return HookBridge.invokeSpecialMethod(method, getExecutableShorty(method), method.getDeclaringClass(), thisObject, args);
-    }
-
-    @Override
-    public <T> void invokeSpecial(@NonNull Constructor<T> constructor, @NonNull T thisObject, Object... args) throws InvocationTargetException, IllegalArgumentException, IllegalAccessException {
-        if (Modifier.isStatic(constructor.getModifiers())) {
-            throw new IllegalArgumentException("Cannot invoke special on static constructor: " + constructor);
-        }
-        HookBridge.invokeSpecialMethod(constructor, getExecutableShorty(constructor), constructor.getDeclaringClass(), thisObject, args);
-    }
-
-    @NonNull
-    @Override
-    public <T> T newInstanceOrigin(@NonNull Constructor<T> constructor, Object... args) throws InvocationTargetException, IllegalAccessException, InstantiationException {
-        var obj = HookBridge.allocateObject(constructor.getDeclaringClass());
-        HookBridge.invokeOriginalMethod(constructor, obj, args);
-        return obj;
-    }
-
-    @NonNull
-    @Override
-    public <T, U> U newInstanceSpecial(@NonNull Constructor<T> constructor, @NonNull Class<U> subClass, Object... args) throws InvocationTargetException, IllegalArgumentException, IllegalAccessException, InstantiationException {
-        var superClass = constructor.getDeclaringClass();
-        if (!superClass.isAssignableFrom(subClass)) {
-            throw new IllegalArgumentException(subClass + " is not inherited from " + superClass);
-        }
-        var obj = HookBridge.allocateObject(subClass);
-        HookBridge.invokeSpecialMethod(constructor, getExecutableShorty(constructor), superClass, obj, args);
-        return obj;
+    public void log(int priority, @Nullable String tag, @NonNull String msg) {
+        log(priority, tag, msg, null);
     }
 
     @Override
@@ -332,29 +236,12 @@ public class LSPosedContext implements XposedInterface {
         }
 
         writer.flush();
-        Log.println(priority, "LSPosedFramework", output.toString());
-    }
-
-    @Override
-    @Deprecated
-    public void log(@NonNull String message) {
-        log(Log.INFO, "null", message, null);
-    }
-
-    @Override
-    @Deprecated
-    public void log(@NonNull String message, @NonNull Throwable throwable) {
-        log(Log.ERROR, "null", message, throwable);
-    }
-
-    @Override
-    public DexParser parseDex(@NonNull ByteBuffer dexData, boolean includeAnnotations) throws IOException {
-        return new LSPosedDexParser(dexData, includeAnnotations);
+        Log.println(priority, TAG, output.toString());
     }
 
     @NonNull
     @Override
-    public ApplicationInfo getApplicationInfo() {
+    public ApplicationInfo getModuleApplicationInfo() {
         return mApplicationInfo;
     }
 
@@ -366,7 +253,7 @@ public class LSPosedContext implements XposedInterface {
             try {
                 return new LSPosedRemotePreferences(service, n);
             } catch (RemoteException e) {
-                log("Failed to get remote preferences", e);
+                log(Log.ERROR, "null", "Failed to get remote preferences", e);
                 throw new XposedFrameworkError(e);
             }
         });
@@ -378,7 +265,7 @@ public class LSPosedContext implements XposedInterface {
         try {
             return service.getRemoteFileList();
         } catch (RemoteException e) {
-            log("Failed to list remote files", e);
+            log(Log.ERROR, "null", "Failed to list remote files", e);
             throw new XposedFrameworkError(e);
         }
     }

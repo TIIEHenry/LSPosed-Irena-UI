@@ -57,10 +57,11 @@ import java.util.zip.ZipFile;
 public final class ModuleUtil {
     // xposedminversion below this
     public static int MIN_MODULE_VERSION = 2; // reject modules with
+    public static final int MIN_OUTDATED_MODERN_MODULE_API = 100;
     private static ModuleUtil instance = null;
     private final PackageManager pm;
     private final Set<ModuleListener> listeners = ConcurrentHashMap.newKeySet();
-    private HashSet<String> enabledModules = new HashSet<>();
+    private HashSet<Pair<String, Integer>> enabledModules = new HashSet<>();
     private List<UserInfo> users = new ArrayList<>();
     private Map<Pair<String, Integer>, InstalledModule> installedModules = new HashMap<>();
     private boolean modulesLoaded = false;
@@ -86,6 +87,9 @@ public final class ModuleUtil {
     }
 
     public static int extractIntPart(String str) {
+        if (str == null) {
+            return 0;
+        }
         int result = 0, length = str.length();
         for (int offset = 0; offset < length; offset++) {
             char c = str.charAt(offset);
@@ -95,6 +99,27 @@ public final class ModuleUtil {
                 break;
         }
         return result;
+    }
+
+    private static int getTargetApiVersion(ZipFile zip) throws IOException {
+        var propEntry = zip.getEntry("META-INF/xposed/module.prop");
+        if (propEntry == null) {
+            return 0;
+        }
+        var prop = new Properties();
+        try (var in = zip.getInputStream(propEntry)) {
+            prop.load(in);
+        }
+        return extractIntPart(prop.getProperty("targetApiVersion"));
+    }
+
+    private static boolean isOutdatedModernModule(ZipFile zip) throws IOException {
+        int apiVersion = ConfigManager.getXposedApiVersion();
+        int targetApiVersion = getTargetApiVersion(zip);
+        return zip.getEntry("META-INF/xposed/java_init.list") != null
+                && apiVersion > 0
+                && targetApiVersion >= MIN_OUTDATED_MODERN_MODULE_API
+                && targetApiVersion < apiVersion;
     }
 
     public static ZipFile getModernModuleApk(ApplicationInfo info) {
@@ -107,7 +132,31 @@ public final class ModuleUtil {
         for (var apk : apks) {
             try {
                 zip = new ZipFile(apk);
-                if (zip.getEntry("META-INF/xposed/java_init.list") != null) {
+                int apiVersion = ConfigManager.getXposedApiVersion();
+                if (zip.getEntry("META-INF/xposed/java_init.list") != null
+                        && apiVersion > 0
+                        && getTargetApiVersion(zip) >= apiVersion) {
+                    return zip;
+                }
+                zip.close();
+                zip = null;
+            } catch (IOException ignored) {
+            }
+        }
+        return zip;
+    }
+
+    public static ZipFile getOutdatedModernModuleApk(ApplicationInfo info) {
+        String[] apks;
+        if (info.splitSourceDirs != null) {
+            apks = Arrays.copyOf(info.splitSourceDirs, info.splitSourceDirs.length + 1);
+            apks[info.splitSourceDirs.length] = info.sourceDir;
+        } else apks = new String[]{info.sourceDir};
+        ZipFile zip = null;
+        for (var apk : apks) {
+            try {
+                zip = new ZipFile(apk);
+                if (isOutdatedModernModule(zip)) {
                     return zip;
                 }
                 zip.close();
@@ -135,8 +184,11 @@ public final class ModuleUtil {
             ApplicationInfo app = pkg.applicationInfo;
 
             var modernApk = getModernModuleApk(app);
-            if (modernApk != null || isLegacyModule(app)) {
-                modules.computeIfAbsent(Pair.create(pkg.packageName, app.uid / App.PER_USER_RANGE), k -> new InstalledModule(pkg, modernApk));
+            var legacy = isLegacyModule(app);
+            var outdatedModernApk = modernApk == null && !legacy ? getOutdatedModernModuleApk(app) : null;
+            if (modernApk != null || legacy || outdatedModernApk != null) {
+                modules.computeIfAbsent(Pair.create(pkg.packageName, app.uid / App.PER_USER_RANGE),
+                        k -> new InstalledModule(pkg, modernApk != null ? modernApk : outdatedModernApk));
             }
         }
 
@@ -144,7 +196,9 @@ public final class ModuleUtil {
 
         this.users = users;
 
-        enabledModules = new HashSet<>(Arrays.asList(ConfigManager.getEnabledModules()));
+        enabledModules = ConfigManager.getEnabledModules().stream()
+                .map(module -> Pair.create(module.packageName, module.userId))
+                .collect(Collectors.toCollection(HashSet::new));
         modulesLoaded = true;
         listeners.forEach(ModuleListener::onModulesReloaded);
     }
@@ -159,8 +213,8 @@ public final class ModuleUtil {
     }
 
     public InstalledModule reloadSingleModule(String packageName, int userId, boolean packageFullyRemoved) {
-        if (packageFullyRemoved && isModuleEnabled(packageName)) {
-            enabledModules.remove(packageName);
+        if (packageFullyRemoved && isModuleEnabled(packageName, userId)) {
+            enabledModules.remove(Pair.create(packageName, userId));
             listeners.forEach(ModuleListener::onModulesReloaded);
         }
         PackageInfo pkg;
@@ -175,8 +229,10 @@ public final class ModuleUtil {
 
         ApplicationInfo app = pkg.applicationInfo;
         var modernApk = getModernModuleApk(app);
-        if (modernApk != null || isLegacyModule(app)) {
-            InstalledModule module = new InstalledModule(pkg, modernApk);
+        var legacy = isLegacyModule(app);
+        var outdatedModernApk = modernApk == null && !legacy ? getOutdatedModernModuleApk(app) : null;
+        if (modernApk != null || legacy || outdatedModernApk != null) {
+            InstalledModule module = new InstalledModule(pkg, modernApk != null ? modernApk : outdatedModernApk);
             installedModules.put(Pair.create(packageName, userId), module);
             listeners.forEach(i -> i.onSingleModuleReloaded(module));
             return module;
@@ -202,20 +258,20 @@ public final class ModuleUtil {
         return modulesLoaded ? installedModules : null;
     }
 
-    public boolean setModuleEnabled(String packageName, boolean enabled) {
-        if (!ConfigManager.setModuleEnabled(packageName, enabled)) {
+    public boolean setModuleEnabled(String packageName, int userId, boolean enabled) {
+        if (!ConfigManager.setModuleEnabled(packageName, userId, enabled)) {
             return false;
         }
         if (enabled) {
-            enabledModules.add(packageName);
+            enabledModules.add(Pair.create(packageName, userId));
         } else {
-            enabledModules.remove(packageName);
+            enabledModules.remove(Pair.create(packageName, userId));
         }
         return true;
     }
 
-    public boolean isModuleEnabled(String packageName) {
-        return enabledModules.contains(packageName);
+    public boolean isModuleEnabled(String packageName, int userId) {
+        return enabledModules.contains(Pair.create(packageName, userId));
     }
 
     public int getEnabledModulesCount() {

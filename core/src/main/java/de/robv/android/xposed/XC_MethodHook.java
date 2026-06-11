@@ -26,6 +26,7 @@ import java.util.HashMap;
 
 import de.robv.android.xposed.callbacks.IXUnhook;
 import de.robv.android.xposed.callbacks.XCallback;
+import io.github.libxposed.api.XposedInterface;
 
 /**
  * Callback class for method hooks.
@@ -182,17 +183,23 @@ public abstract class XC_MethodHook extends XCallback {
      * An object with which the method/constructor can be unhooked.
      */
     public class Unhook implements IXUnhook<XC_MethodHook> {
-        private final Member hookMethod;
+        private final XposedInterface.HookHandle handle;
+        private final Runnable cleanup;
 
-        /*package*/ Unhook(Member hookMethod) {
-            this.hookMethod = hookMethod;
+        /*package*/ Unhook(XposedInterface.HookHandle handle) {
+            this(handle, null);
+        }
+
+        /*package*/ Unhook(XposedInterface.HookHandle handle, Runnable cleanup) {
+            this.handle = handle;
+            this.cleanup = cleanup;
         }
 
         /**
          * Returns the method/constructor that has been hooked.
          */
         public Member getHookedMethod() {
-            return hookMethod;
+            return handle.getExecutable();
         }
 
         @Override
@@ -203,7 +210,10 @@ public abstract class XC_MethodHook extends XCallback {
         @SuppressWarnings("deprecation")
         @Override
         public void unhook() {
-            XposedBridge.unhookMethod(hookMethod, XC_MethodHook.this);
+            handle.unhook();
+            if (cleanup != null) {
+                cleanup.run();
+            }
         }
 
     }

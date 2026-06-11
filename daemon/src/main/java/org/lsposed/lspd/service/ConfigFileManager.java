@@ -70,6 +70,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Properties;
 import java.util.zip.Deflater;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
@@ -396,6 +397,69 @@ public class ConfigFileManager {
         }
     }
 
+    private static Properties readModuleProperties(ZipFile apkFile) {
+        var propEntry = apkFile.getEntry("META-INF/xposed/module.prop");
+        if (propEntry == null) return null;
+        var properties = new Properties();
+        try (var in = apkFile.getInputStream(propEntry)) {
+            properties.load(in);
+            return properties;
+        } catch (IOException e) {
+            Log.e(TAG, "Can not open " + propEntry, e);
+            return null;
+        }
+    }
+
+    private static int readApiVersion(Properties properties, String key) {
+        var value = properties.getProperty(key);
+        if (value == null || value.trim().isEmpty()) {
+            return 0;
+        }
+        value = value.trim();
+        int result = 0;
+        int length = value.length();
+        int offset = 0;
+        for (; offset < length; offset++) {
+            char c = value.charAt(offset);
+            if ('0' <= c && c <= '9') {
+                result = result * 10 + (c - '0');
+            } else {
+                break;
+            }
+        }
+        if (offset == 0) {
+            return 0;
+        }
+        return result;
+    }
+
+    static Properties readModernModuleProperties(ZipFile apkFile) {
+        if (apkFile.getEntry("META-INF/xposed/java_init.list") == null) return null;
+        var properties = readModuleProperties(apkFile);
+        if (properties == null) return null;
+        int minApiVersion = readApiVersion(properties, "minApiVersion");
+        int targetApiVersion = readApiVersion(properties, "targetApiVersion");
+        if (minApiVersion > LSPModuleService.XPOSED_API_VERSION) return null;
+        if (targetApiVersion < LSPModuleService.XPOSED_API_VERSION) return null;
+        return properties;
+    }
+
+    static boolean requiresModernModuleLoading(ZipFile apkFile) {
+        var properties = readModuleProperties(apkFile);
+        if (properties == null) return false;
+        int minApiVersion = readApiVersion(properties, "minApiVersion");
+        int targetApiVersion = readApiVersion(properties, "targetApiVersion");
+        return minApiVersion > LSPModuleService.XPOSED_API_VERSION
+                || targetApiVersion >= LSPModuleService.XPOSED_API_VERSION;
+    }
+
+    private static boolean isExceptionPassthrough(Properties properties) {
+        if (properties == null) {
+            return false;
+        }
+        return "passthrough".equals(properties.getProperty("exceptionMode", "").trim());
+    }
+
     @Nullable
     static PreLoadedApk loadModule(String path, boolean obfuscate) {
         if (path == null) return null;
@@ -405,14 +469,19 @@ public class ConfigFileManager {
         var moduleLibraryNames = new ArrayList<String>(1);
         try (var apkFile = new ZipFile(toGlobalNamespace(path))) {
             readDexes(apkFile, preLoadedDexes, obfuscate);
-            readName(apkFile, "META-INF/xposed/java_init.list", moduleClassNames);
-            if (moduleClassNames.isEmpty()) {
+            var properties = readModuleProperties(apkFile);
+            if (properties != null && readApiVersion(properties, "minApiVersion") > LSPModuleService.XPOSED_API_VERSION) {
+                return null;
+            }
+            if (properties != null && readApiVersion(properties, "targetApiVersion") >= LSPModuleService.XPOSED_API_VERSION) {
+                file.legacy = false;
+                readName(apkFile, "META-INF/xposed/java_init.list", moduleClassNames);
+                readName(apkFile, "META-INF/xposed/native_init.list", moduleLibraryNames);
+                file.exceptionPassthrough = isExceptionPassthrough(properties);
+            } else {
                 file.legacy = true;
                 readName(apkFile, "assets/xposed_init", moduleClassNames);
                 readName(apkFile, "assets/native_init", moduleLibraryNames);
-            } else {
-                file.legacy = false;
-                readName(apkFile, "META-INF/xposed/native_init.list", moduleLibraryNames);
             }
         } catch (IOException e) {
             Log.e(TAG, "Can not open " + path, e);
@@ -427,7 +496,7 @@ public class ConfigFileManager {
                 var s = moduleClassNames.get(i);
                 for (var entry : signatures.entrySet()) {
                     if (s.startsWith(entry.getKey())) {
-                        moduleClassNames.add(i, s.replace(entry.getKey(), entry.getValue()));
+                        moduleClassNames.set(i, s.replace(entry.getKey(), entry.getValue()));
                     }
                 }
             }

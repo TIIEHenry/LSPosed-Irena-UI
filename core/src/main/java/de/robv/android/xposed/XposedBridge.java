@@ -26,7 +26,6 @@ import android.content.res.TypedArray;
 import android.util.Log;
 
 import org.lsposed.lspd.impl.LSPosedBridge;
-import org.lsposed.lspd.impl.LSPosedHookCallback;
 import org.lsposed.lspd.nativebridge.HookBridge;
 import org.lsposed.lspd.nativebridge.ResourcesHook;
 
@@ -40,6 +39,7 @@ import java.lang.reflect.Proxy;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArraySet;
 
 import de.robv.android.xposed.callbacks.XC_InitPackageResources;
@@ -71,6 +71,7 @@ public final class XposedBridge {
     public static int XPOSED_BRIDGE_VERSION;
 
     private static final Object[] EMPTY_ARRAY = new Object[0];
+    private static final ConcurrentHashMap<HookKey, XposedInterface.Hooker> legacyHookers = new ConcurrentHashMap<>();
 
     // built-in handlers
     public static final CopyOnWriteArraySet<XC_LoadPackage> sLoadedPackageCallbacks = new CopyOnWriteArraySet<>();
@@ -133,7 +134,7 @@ public final class XposedBridge {
      * Returns the currently installed version of the Xposed framework.
      */
     public static int getXposedVersion() {
-        return XposedInterface.API;
+        return XposedInterface.LIB_API;
     }
 
     /**
@@ -207,12 +208,12 @@ public final class XposedBridge {
             throw new IllegalArgumentException("callback should not be null!");
         }
 
-        if (!HookBridge.hookMethod(false, (Executable) hookMethod, LSPosedBridge.NativeHooker.class, callback.priority, callback)) {
-            log("Failed to hook " + hookMethod);
-            return null;
-        }
+        var hooker = new CompatHooker(callback);
+        var key = new HookKey(hookMethod, callback);
+        var handle = LSPosedBridge.doHook((Executable) hookMethod, callback.priority, hooker);
+        legacyHookers.put(key, hooker);
 
-        return callback.new Unhook(hookMethod);
+        return callback.new Unhook(handle, () -> legacyHookers.remove(key, hooker));
     }
 
     /**
@@ -226,7 +227,10 @@ public final class XposedBridge {
     @Deprecated
     public static void unhookMethod(Member hookMethod, XC_MethodHook callback) {
         if (hookMethod instanceof Executable) {
-            HookBridge.unhookMethod(false, (Executable) hookMethod, callback);
+            var hooker = legacyHookers.remove(new HookKey(hookMethod, callback));
+            if (hooker != null) {
+                HookBridge.unhookMethod((Executable) hookMethod, hooker);
+            }
         }
     }
 
@@ -383,81 +387,76 @@ public final class XposedBridge {
         }
     }
 
-    public static class LegacyApiSupport<T extends Executable> {
-        private final XC_MethodHook.MethodHookParam<T> param;
-        private final LSPosedHookCallback<T> callback;
-        private final Object[] snapshot;
+    private static final class HookKey {
+        private final Member method;
+        private final XC_MethodHook callback;
 
-        private int beforeIdx;
-
-        public LegacyApiSupport(LSPosedHookCallback<T> callback, Object[] legacySnapshot) {
-            this.param = new XC_MethodHook.MethodHookParam<>();
+        private HookKey(Member method, XC_MethodHook callback) {
+            this.method = method;
             this.callback = callback;
-            this.snapshot = legacySnapshot;
         }
 
-        public void handleBefore() {
-            syncronizeApi(param, callback, true);
-            for (beforeIdx = 0; beforeIdx < snapshot.length; beforeIdx++) {
+        @Override
+        public boolean equals(Object obj) {
+            if (!(obj instanceof HookKey other)) {
+                return false;
+            }
+            return method.equals(other.method) && callback == other.callback;
+        }
+
+        @Override
+        public int hashCode() {
+            return method.hashCode() * 31 + System.identityHashCode(callback);
+        }
+    }
+
+    private static final class CompatHooker implements XposedInterface.Hooker {
+        private final XC_MethodHook callback;
+
+        private CompatHooker(XC_MethodHook callback) {
+            this.callback = callback;
+        }
+
+        @Override
+        public Object intercept(XposedInterface.Chain chain) throws Throwable {
+            XC_MethodHook.MethodHookParam<Executable> param = new XC_MethodHook.MethodHookParam<>();
+            param.method = chain.getExecutable();
+            param.thisObject = chain.getThisObject();
+            param.args = chain.getArgs().toArray();
+            try {
+                callback.callBeforeHookedMethod(param);
+            } catch (Throwable t) {
+                log(t);
+                param.result = null;
+                param.throwable = null;
+                param.returnEarly = false;
+            }
+
+            if (!param.returnEarly) {
                 try {
-                    var cb = (XC_MethodHook) snapshot[beforeIdx];
-                    cb.beforeHookedMethod(param);
+                    param.result = chain.proceedWith(param.thisObject, param.args);
+                    param.throwable = null;
                 } catch (Throwable t) {
-                    XposedBridge.log(t);
-
-                    // reset result (ignoring what the unexpectedly exiting callback did)
-                    param.setResult(null);
-                    param.returnEarly = false;
-                    continue;
-                }
-
-                if (param.returnEarly) {
-                    // skip remaining "before" callbacks and corresponding "after" callbacks
-                    beforeIdx++;
-                    break;
+                    param.result = null;
+                    param.throwable = t;
                 }
             }
-            syncronizeApi(param, callback, false);
-        }
 
-        public void handleAfter() {
-            syncronizeApi(param, callback, true);
-            for (int afterIdx = beforeIdx - 1; afterIdx >= 0; afterIdx--) {
-                Object lastResult = param.getResult();
-                Throwable lastThrowable = param.getThrowable();
-                try {
-                    var cb = (XC_MethodHook) snapshot[afterIdx];
-                    cb.afterHookedMethod(param);
-                } catch (Throwable t) {
-                    XposedBridge.log(t);
-
-                    // reset to last result (ignoring what the unexpectedly exiting callback did)
-                    if (lastThrowable == null) {
-                        param.setResult(lastResult);
-                    } else {
-                        param.setThrowable(lastThrowable);
-                    }
+            Object lastResult = param.result;
+            Throwable lastThrowable = param.throwable;
+            try {
+                callback.callAfterHookedMethod(param);
+            } catch (Throwable t) {
+                log(t);
+                if (lastThrowable == null) {
+                    return lastResult;
                 }
+                throw lastThrowable;
             }
-            syncronizeApi(param, callback, false);
-        }
-
-        private void syncronizeApi(XC_MethodHook.MethodHookParam<T> param, LSPosedHookCallback<T> callback, boolean forward) {
-            if (forward) {
-                param.method = callback.method;
-                param.thisObject = callback.thisObject;
-                param.args = callback.args;
-                param.result = callback.result;
-                param.throwable = callback.throwable;
-                param.returnEarly = callback.isSkipped;
-            } else {
-                callback.method = param.method;
-                callback.thisObject = param.thisObject;
-                callback.args = param.args;
-                callback.result = param.result;
-                callback.throwable = param.throwable;
-                callback.isSkipped = param.returnEarly;
+            if (param.throwable == null) {
+                return param.result;
             }
+            throw param.throwable;
         }
     }
 }

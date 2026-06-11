@@ -65,14 +65,13 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles("proguard-rules.pro")
         }
     }
 
     sourceSets {
         named("main") {
             res {
-                srcDirs("src/common/res")
+                directories += "src/common/res"
             }
         }
     }

@@ -347,7 +347,7 @@ public class ModulesFragment extends BaseFragment implements ModuleUtil.ModuleLi
             CompileDialogFragment.speed(getChildFragmentManager(), selectedModule.pkg.applicationInfo);
             return true;
         } else if (itemId == R.id.menu_reset_scope_request) {
-            var success = ConfigManager.removeBlockedScopeRequest(selectedModule.packageName);
+            var success = ConfigManager.removeBlockedScopeRequest(selectedModule.packageName, selectedModule.userId);
             showHint(success ? R.string.scope_request_setting_reset : R.string.scope_request_setting_reset_failed, false);
             return true;
         }
@@ -570,6 +570,11 @@ public class ModulesFragment extends BaseFragment implements ModuleUtil.ModuleLi
                 warningText = getString(R.string.warning_xposed_min_version, item.minVersion);
             } else if (item.targetVersion > installXposedVersion) {
                 warningText = getString(R.string.warning_target_version_higher, item.targetVersion);
+            } else if (!item.legacy
+                    && installXposedVersion > 0
+                    && item.targetVersion >= ModuleUtil.MIN_OUTDATED_MODERN_MODULE_API
+                    && item.targetVersion < installXposedVersion) {
+                warningText = getString(R.string.warning_min_version_too_low, item.minVersion, installXposedVersion);
             } else if (item.minVersion < ModuleUtil.MIN_MODULE_VERSION) {
                 warningText = getString(R.string.warning_min_version_too_low, item.minVersion, ModuleUtil.MIN_MODULE_VERSION);
             } else if (item.isInstalledOnExternalStorage()) {
@@ -610,7 +615,7 @@ public class ModulesFragment extends BaseFragment implements ModuleUtil.ModuleLi
             }
 
             if (!isPick) {
-                holder.root.setAlpha(moduleUtil.isModuleEnabled(item.packageName) ? 1.0f : .5f);
+                holder.root.setAlpha(moduleUtil.isModuleEnabled(item.packageName, item.userId) ? 1.0f : .5f);
                 holder.itemView.setOnClickListener(v -> {
                     searchView.clearFocus();
                     safeNavigate(ModulesFragmentDirections.actionModulesFragmentToAppListFragment(item.packageName, item.userId));
@@ -704,8 +709,8 @@ public class ModulesFragment extends BaseFragment implements ModuleUtil.ModuleLi
             var tmpList = new ArrayList<ModuleUtil.InstalledModule>();
             modules.values().parallelStream()
                     .sorted((a, b) -> {
-                        boolean aChecked = moduleUtil.isModuleEnabled(a.packageName);
-                        boolean bChecked = moduleUtil.isModuleEnabled(b.packageName);
+                        boolean aChecked = moduleUtil.isModuleEnabled(a.packageName, a.userId);
+                        boolean bChecked = moduleUtil.isModuleEnabled(b.packageName, b.userId);
                         if (aChecked == bChecked) {
                             var c = cmp.compare(a.pkg, b.pkg);
                             if (c == 0) {

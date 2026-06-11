@@ -35,7 +35,8 @@ import io.github.libxposed.api.XposedModuleInterface;
 
 public class StartBootstrapServicesHooker implements XposedInterface.Hooker {
 
-    public static void before() {
+    @Override
+    public Object intercept(XposedInterface.Chain chain) throws Throwable {
         logD("SystemServer#startBootstrapServices() starts");
 
         try {
@@ -49,7 +50,7 @@ public class StartBootstrapServicesHooker implements XposedInterface.Hooker {
             lpparam.isFirstApplication = true;
             XC_LoadPackage.callAll(lpparam);
 
-            LSPosedContext.callOnSystemServerLoaded(new XposedModuleInterface.SystemServerLoadedParam() {
+            LSPosedContext.callOnSystemServerStarting(new XposedModuleInterface.SystemServerStartingParam() {
                 @Override
                 @NonNull
                 public ClassLoader getClassLoader() {
@@ -59,5 +60,6 @@ public class StartBootstrapServicesHooker implements XposedInterface.Hooker {
         } catch (Throwable t) {
             Hookers.logE("error when hooking startBootstrapServices", t);
         }
+        return chain.proceed();
     }
 }

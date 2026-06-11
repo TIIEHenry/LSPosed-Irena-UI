@@ -23,6 +23,7 @@ package org.lsposed.lspd.hooker;
 import static org.lsposed.lspd.core.ApplicationServiceClient.serviceClient;
 
 import android.annotation.SuppressLint;
+import android.app.AppComponentFactory;
 import android.app.ActivityThread;
 import android.app.LoadedApk;
 import android.content.pm.ApplicationInfo;
@@ -57,6 +58,7 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
     private final static Field defaultClassLoaderField;
 
     private final static Set<LoadedApk> loadedApks = ConcurrentHashMap.newKeySet();
+    private final static ThreadLocal<PackageLoadParam> packageLoadParam = new ThreadLocal<>();
 
     static {
         Field field = null;
@@ -74,11 +76,19 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
         loadedApks.add(loadedApk);
     }
 
-    public static void after(XposedInterface.AfterHookCallback callback) {
-        LoadedApk loadedApk = (LoadedApk) callback.getThisObject();
+    static PackageLoadParam getPackageLoadParam() {
+        return packageLoadParam.get();
+    }
 
-        if (callback.getArgs()[0] != null || !loadedApks.contains(loadedApk)) {
-            return;
+    @Override
+    public Object intercept(XposedInterface.Chain chain) throws Throwable {
+        LoadedApk loadedApk = (LoadedApk) chain.getThisObject();
+        Object result = null;
+        boolean proceeded = false;
+        boolean proceeding = false;
+
+        if (chain.getArg(0) != null || !loadedApks.contains(loadedApk)) {
+            return chain.proceed();
         }
 
         try {
@@ -94,21 +104,34 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
                 packageName = "system";
             }
 
+            if (!isFirstPackage && !XposedHelpers.getBooleanField(loadedApk, "mIncludeCode")) {
+                Object mAppDir = XposedHelpers.getObjectField(loadedApk, "mAppDir");
+                Hookers.logD("LoadedApk#<init> mIncludeCode == false: " + mAppDir);
+                proceeding = true;
+                result = chain.proceed();
+                proceeding = false;
+                proceeded = true;
+                return result;
+            }
+
+            var param = new PackageLoadParam(loadedApk, isFirstPackage);
+            packageLoadParam.set(param);
+            proceeding = true;
+            result = chain.proceed();
+            proceeding = false;
+            proceeded = true;
+            packageLoadParam.remove();
+
             Object mAppDir = XposedHelpers.getObjectField(loadedApk, "mAppDir");
             ClassLoader classLoader = (ClassLoader) XposedHelpers.getObjectField(loadedApk, "mClassLoader");
             Hookers.logD("LoadedApk#createClassLoader ends: " + mAppDir + " -> " + classLoader);
 
             if (classLoader == null) {
-                return;
+                return result;
             }
-
-            if (!isFirstPackage && !XposedHelpers.getBooleanField(loadedApk, "mIncludeCode")) {
-                Hookers.logD("LoadedApk#<init> mIncludeCode == false: " + mAppDir);
-                return;
-            }
-
-            if (!isFirstPackage && !XposedInit.getLoadedModules().getOrDefault(packageName, Optional.of("")).isPresent()) {
-                return;
+            param.setClassLoader(classLoader);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                param.setAppComponentFactory((AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory"));
             }
 
             XC_LoadPackage.LoadPackageParam lpparam = new XC_LoadPackage.LoadPackageParam(
@@ -126,44 +149,101 @@ public class LoadedApkCreateCLHooker implements XposedInterface.Hooker {
             Hookers.logD("Call handleLoadedPackage: packageName=" + lpparam.packageName + " processName=" + lpparam.processName + " isFirstPackage=" + isFirstPackage + " classLoader=" + lpparam.classLoader + " appInfo=" + lpparam.appInfo);
             XC_LoadPackage.callAll(lpparam);
 
-            LSPosedContext.callOnPackageLoaded(new XposedModuleInterface.PackageLoadedParam() {
-                @NonNull
-                @Override
-                public String getPackageName() {
-                    return loadedApk.getPackageName();
-                }
-
-                @NonNull
-                @Override
-                public ApplicationInfo getApplicationInfo() {
-                    return loadedApk.getApplicationInfo();
-                }
-
-                @NonNull
-                @Override
-                public ClassLoader getDefaultClassLoader() {
-                    try {
-                        return (ClassLoader) defaultClassLoaderField.get(loadedApk);
-                    } catch (Throwable t) {
-                        throw new IllegalStateException(t);
-                    }
-                }
-
-                @NonNull
-                @Override
-                public ClassLoader getClassLoader() {
-                    return classLoader;
-                }
-
-                @Override
-                public boolean isFirstPackage() {
-                    return isFirstPackage;
-                }
-            });
+            LSPosedContext.callOnPackageReady(param);
         } catch (Throwable t) {
+            if (proceeding) {
+                throw t;
+            }
             Hookers.logE("error when hooking LoadedApk#createClassLoader", t);
+            if (!proceeded) {
+                return chain.proceed();
+            }
         } finally {
+            packageLoadParam.remove();
             loadedApks.remove(loadedApk);
+        }
+        return result;
+    }
+
+    static class PackageLoadParam implements XposedModuleInterface.PackageReadyParam {
+        private final LoadedApk loadedApk;
+        private final boolean isFirstPackage;
+        private ClassLoader defaultClassLoader;
+        private ClassLoader classLoader;
+        private AppComponentFactory appComponentFactory;
+
+        PackageLoadParam(LoadedApk loadedApk, boolean isFirstPackage) {
+            this.loadedApk = loadedApk;
+            this.isFirstPackage = isFirstPackage;
+        }
+
+        void setDefaultClassLoader(ClassLoader defaultClassLoader) {
+            this.defaultClassLoader = defaultClassLoader;
+        }
+
+        void setClassLoader(ClassLoader classLoader) {
+            this.classLoader = classLoader;
+        }
+
+        void setAppComponentFactory(AppComponentFactory appComponentFactory) {
+            this.appComponentFactory = appComponentFactory;
+        }
+
+        @NonNull
+        @Override
+        public String getPackageName() {
+            return loadedApk.getPackageName();
+        }
+
+        @NonNull
+        @Override
+        public ApplicationInfo getApplicationInfo() {
+            return loadedApk.getApplicationInfo();
+        }
+
+        @NonNull
+        @Override
+        public ClassLoader getDefaultClassLoader() {
+            if (defaultClassLoader != null) {
+                return defaultClassLoader;
+            }
+            try {
+                ClassLoader defaultClassLoader = defaultClassLoaderField == null ? classLoader : (ClassLoader) defaultClassLoaderField.get(loadedApk);
+                if (defaultClassLoader == null) {
+                    throw new IllegalStateException("Default ClassLoader is not ready");
+                }
+                return defaultClassLoader;
+            } catch (IllegalStateException e) {
+                throw e;
+            } catch (Throwable t) {
+                throw new IllegalStateException(t);
+            }
+        }
+
+        @NonNull
+        @Override
+        public ClassLoader getClassLoader() {
+            if (classLoader == null) {
+                throw new IllegalStateException("ClassLoader is not ready");
+            }
+            return classLoader;
+        }
+
+        @Override
+        public boolean isFirstPackage() {
+            return isFirstPackage;
+        }
+
+        @NonNull
+        @Override
+        public AppComponentFactory getAppComponentFactory() {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) {
+                throw new UnsupportedOperationException();
+            }
+            if (appComponentFactory != null) {
+                return appComponentFactory;
+            }
+            return (AppComponentFactory) XposedHelpers.getObjectField(loadedApk, "mAppComponentFactory");
         }
     }
 

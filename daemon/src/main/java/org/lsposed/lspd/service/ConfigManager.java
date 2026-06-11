@@ -19,7 +19,6 @@
 
 package org.lsposed.lspd.service;
 
-import static org.lsposed.lspd.service.PackageService.MATCH_ALL_FLAGS;
 import static org.lsposed.lspd.service.PackageService.PER_USER_RANGE;
 import static org.lsposed.lspd.service.ServiceManager.TAG;
 import static org.lsposed.lspd.service.ServiceManager.existsInGlobalNamespace;
@@ -27,7 +26,6 @@ import static org.lsposed.lspd.service.ServiceManager.toGlobalNamespace;
 
 import android.annotation.SuppressLint;
 import android.content.ContentValues;
-import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageParser;
 import android.database.Cursor;
@@ -69,7 +67,6 @@ import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -84,12 +81,13 @@ import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
 import hidden.HiddenApiBridge;
 
 public class ConfigManager {
+    private static final int DB_VERSION = 101;
+
     private static ConfigManager instance = null;
 
     private final SQLiteDatabase db = openDb();
@@ -136,33 +134,52 @@ public class ConfigManager {
     }
 
     private final SQLiteStatement createModulesTable = db.compileStatement("CREATE TABLE IF NOT EXISTS modules (" +
-            "mid integer PRIMARY KEY AUTOINCREMENT," +
-            "module_pkg_name text NOT NULL UNIQUE," +
-            "apk_path text NOT NULL, " +
-            "enabled BOOLEAN DEFAULT 0 " +
-            "CHECK (enabled IN (0, 1))" +
+            "module_pkg_name text PRIMARY KEY NOT NULL," +
+            "apk_path text" +
             ");");
-    private final SQLiteStatement createScopeTable = db.compileStatement("CREATE TABLE IF NOT EXISTS scope (" +
-            "mid integer," +
-            "app_pkg_name text NOT NULL," +
-            "user_id integer NOT NULL," +
-            "PRIMARY KEY (mid, app_pkg_name, user_id)," +
-            "CONSTRAINT scope_module_constraint" +
-            "  FOREIGN KEY (mid)" +
-            "  REFERENCES modules (mid)" +
-            "  ON DELETE CASCADE" +
-            ");");
-    private final SQLiteStatement createConfigTable = db.compileStatement("CREATE TABLE IF NOT EXISTS configs (" +
+    private final SQLiteStatement createModulesStateTable = db.compileStatement("CREATE TABLE IF NOT EXISTS modules_state (" +
             "module_pkg_name text NOT NULL," +
             "user_id integer NOT NULL," +
-            "`group` text NOT NULL," +
-            "`key` text NOT NULL," +
+            "enabled BOOLEAN DEFAULT 0," +
+            "scope_request_blocked BOOLEAN DEFAULT 0," +
+            "CHECK (enabled IN (0, 1))," +
+            "CHECK (scope_request_blocked IN (0, 1))," +
+            "PRIMARY KEY (module_pkg_name, user_id)," +
+            "CONSTRAINT modules_state_constraint" +
+            "  FOREIGN KEY (module_pkg_name)" +
+            "  REFERENCES modules (module_pkg_name)" +
+            "  ON DELETE CASCADE" +
+            ");");
+    private final SQLiteStatement createScopeTable = db.compileStatement("CREATE TABLE IF NOT EXISTS scope (" +
+            "module_pkg_name text NOT NULL," +
+            "app_pkg_name text NOT NULL," +
+            "user_id integer NOT NULL," +
+            "PRIMARY KEY (module_pkg_name, app_pkg_name, user_id)," +
+            "CONSTRAINT scope_module_constraint" +
+            "  FOREIGN KEY (module_pkg_name)" +
+            "  REFERENCES modules (module_pkg_name)" +
+            "  ON DELETE CASCADE" +
+            ");");
+    private final SQLiteStatement createModuleConfigTable = db.compileStatement("CREATE TABLE IF NOT EXISTS module_configs (" +
+            "module_pkg_name text NOT NULL," +
+            "user_id integer NOT NULL," +
+            "group_name text NOT NULL," +
+            "key_name text NOT NULL," +
             "data blob NOT NULL," +
-            "PRIMARY KEY (module_pkg_name, user_id, `group`, `key`)," +
+            "PRIMARY KEY (module_pkg_name, user_id, group_name, key_name)," +
             "CONSTRAINT config_module_constraint" +
             "  FOREIGN KEY (module_pkg_name)" +
             "  REFERENCES modules (module_pkg_name)" +
             "  ON DELETE CASCADE" +
+            ");");
+    private final SQLiteStatement createAppConfigTable = db.compileStatement("CREATE TABLE IF NOT EXISTS app_configs (" +
+            "app_pkg_name text NOT NULL," +
+            "data blob NOT NULL," +
+            "PRIMARY KEY (app_pkg_name)" +
+            ");");
+    private final SQLiteStatement createLspdConfigTable = db.compileStatement("CREATE TABLE IF NOT EXISTS lspd_configs (" +
+            "key_name text NOT NULL PRIMARY KEY," +
+            "data blob NOT NULL" +
             ");");
 
     private final Map<ProcessScope, List<Module>> cachedScope = new ConcurrentHashMap<>();
@@ -172,8 +189,6 @@ public class ConfigManager {
 
     // packageName, userId, group, key, value
     private final Map<Pair<String, Integer>, Map<String, HashMap<String, Object>>> cachedConfig = new ConcurrentHashMap<>();
-
-    private Set<String> scopeRequestBlocked = new HashSet<>();
 
     private static SQLiteDatabase openDb() {
         var params = new SQLiteDatabase.OpenParams.Builder()
@@ -203,7 +218,8 @@ public class ConfigManager {
             return true; // skip
         }
         /*
-        try (Cursor cursor = db.query("scope INNER JOIN modules ON scope.mid = modules.mid", new String[]{"modules.mid"}, "app_pkg_name=? AND enabled=1", new String[]{"system"}, null, null, null)) {
+        try (Cursor cursor = db.query("scope INNER JOIN modules_state USING (module_pkg_name, user_id) INNER JOIN modules USING (module_pkg_name)",
+                new String[]{"module_pkg_name"}, "app_pkg_name=? AND enabled=1 AND user_id=0", new String[]{"system"}, null, null, null)) {
             return cursor == null || !cursor.moveToNext();
         }*/
         return false;
@@ -212,7 +228,8 @@ public class ConfigManager {
     @SuppressLint("BlockedPrivateApi")
     public List<Module> getModulesForSystemServer() {
         List<Module> modules = new LinkedList<>();
-        try (Cursor cursor = db.query("scope INNER JOIN modules ON scope.mid = modules.mid", new String[]{"module_pkg_name", "apk_path"}, "app_pkg_name=? AND enabled=1", new String[]{"system"}, null, null, null)) {
+        try (Cursor cursor = db.query("scope INNER JOIN modules_state USING (module_pkg_name, user_id) INNER JOIN modules USING (module_pkg_name)",
+                new String[]{"module_pkg_name", "apk_path"}, "app_pkg_name=? AND enabled=1 AND user_id=0", new String[]{"system"}, null, null, null)) {
             int apkPathIdx = cursor.getColumnIndex("apk_path");
             int pkgNameIdx = cursor.getColumnIndex("module_pkg_name");
             while (cursor.moveToNext()) {
@@ -271,9 +288,6 @@ public class ConfigManager {
         bool = config.get("enable_status_notification");
         enableStatusNotification = bool == null || (boolean) bool;
 
-        var set = (Set<String>) config.get("scope_request_blocked");
-        scopeRequestBlocked = set == null ? new HashSet<>() : set;
-
         // Don't migrate to ConfigFileManager, as XSharedPreferences will be restored soon
         String string = (String) config.get("misc_path");
         if (string == null) {
@@ -324,6 +338,7 @@ public class ConfigManager {
                 Log.d(TAG, "pm & um are ready, updating cache");
                 // must ensure cache is valid for later usage
                 instance.updateCaches(true);
+                PackageMonitorService.getInstance().updateAllPackagesAsync();
                 instance.updateManager(false);
             }
         }
@@ -339,6 +354,9 @@ public class ConfigManager {
         updateConfig();
         // must ensure cache is valid for later usage
         updateCaches(true);
+        if (PackageService.isAlive() && UserService.isAlive()) {
+            PackageMonitorService.getInstance().updateAllPackagesAsync();
+        }
     }
 
 
@@ -360,54 +378,93 @@ public class ConfigManager {
         });
     }
 
+    private void createCurrentTables() {
+        createModulesTable.execute();
+        createModulesStateTable.execute();
+        createScopeTable.execute();
+        createModuleConfigTable.execute();
+        createAppConfigTable.execute();
+        createLspdConfigTable.execute();
+        db.compileStatement("CREATE INDEX IF NOT EXISTS module_configs_idx ON module_configs (module_pkg_name, user_id);").execute();
+    }
+
     private void initDB() {
         try {
             db.setForeignKeyConstraintsEnabled(true);
             switch (db.getVersion()) {
                 case 0:
                     executeInTransaction(() -> {
-                        createModulesTable.execute();
-                        createScopeTable.execute();
-                        createConfigTable.execute();
-                        var values = new ContentValues();
-                        values.put("module_pkg_name", "lspd");
-                        values.put("apk_path", ConfigFileManager.managerApkPath.toString());
-                        // dummy module for config
-                        db.insertWithOnConflict("modules", null, values, SQLiteDatabase.CONFLICT_IGNORE);
-                        db.setVersion(1);
+                        createCurrentTables();
+                        db.setVersion(DB_VERSION);
                     });
+                    break;
                 case 1:
-                    executeInTransaction(() -> {
-                        db.compileStatement("DROP INDEX IF EXISTS configs_idx;").execute();
-                        db.compileStatement("DROP TABLE IF EXISTS config;").execute();
-                        db.compileStatement("ALTER TABLE scope RENAME TO old_scope;").execute();
-                        db.compileStatement("ALTER TABLE configs RENAME TO old_configs;").execute();
-                        createConfigTable.execute();
-                        createScopeTable.execute();
-                        db.compileStatement("CREATE INDEX IF NOT EXISTS configs_idx ON configs (module_pkg_name, user_id);").execute();
-                        executeInTransaction(() -> {
-                            try {
-                                db.compileStatement("INSERT INTO scope SELECT * FROM old_scope;").execute();
-                            } catch (Throwable e) {
-                                Log.w(TAG, "migrate scope", e);
-                            }
-                        });
-                        executeInTransaction(() -> {
-                            try {
-                                executeInTransaction(() -> db.compileStatement("INSERT INTO configs SELECT * FROM old_configs;").execute());
-                            } catch (Throwable e) {
-                                Log.w(TAG, "migrate config", e);
-                            }
-                        });
-                        db.compileStatement("DROP TABLE old_scope;").execute();
-                        db.compileStatement("DROP TABLE old_configs;").execute();
-                        db.setVersion(2);
-                    });
                 case 2:
+                case 3:
                     executeInTransaction(() -> {
-                        db.compileStatement("UPDATE scope SET app_pkg_name = 'system' WHERE app_pkg_name = 'android';").execute();
-                        db.setVersion(3);
+                        Set<String> blockedScopeRequests = new HashSet<>();
+                        if (tableExists("configs")) {
+                            blockedScopeRequests.addAll(readOldBlockedScopeRequests("configs"));
+                        }
+                        if (tableExists("old_configs")) {
+                            blockedScopeRequests.addAll(readOldBlockedScopeRequests("old_configs"));
+                        }
+                        db.compileStatement("DROP INDEX IF EXISTS configs_idx;").execute();
+                        db.compileStatement("DROP INDEX IF EXISTS module_configs_idx;").execute();
+                        db.compileStatement("DROP TABLE IF EXISTS config;").execute();
+                        if (tableExists("scope") && columnExists("scope", "app_pkg_name")) {
+                            db.compileStatement("UPDATE scope SET app_pkg_name = 'system' WHERE app_pkg_name = 'android';").execute();
+                        }
+                        if (tableExists("old_scope") && columnExists("old_scope", "app_pkg_name")) {
+                            db.compileStatement("UPDATE old_scope SET app_pkg_name = 'system' WHERE app_pkg_name = 'android';").execute();
+                        }
+                        if (tableExists("modules") && columnExists("modules", "mid") && !tableExists("old_modules")) {
+                            db.compileStatement("ALTER TABLE modules RENAME TO old_modules;").execute();
+                        }
+                        if (tableExists("scope") && columnExists("scope", "mid") && !tableExists("old_scope")) {
+                            db.compileStatement("ALTER TABLE scope RENAME TO old_scope;").execute();
+                        }
+                        if (tableExists("configs") && !tableExists("old_configs")) {
+                            db.compileStatement("ALTER TABLE configs RENAME TO old_configs;").execute();
+                        }
+                        createCurrentTables();
+                        if (tableExists("old_modules")) {
+                            db.compileStatement("INSERT OR IGNORE INTO modules (module_pkg_name, apk_path) SELECT module_pkg_name, apk_path FROM old_modules;").execute();
+                        }
+                        if (tableExists("old_configs")) {
+                            migrateOldConfigs("old_configs");
+                        }
+                        if (tableExists("old_modules")) {
+                            db.compileStatement("DELETE FROM old_modules WHERE module_pkg_name = 'lspd';").execute();
+                        }
+                        if (tableExists("old_modules") && tableExists("old_scope")) {
+                            db.compileStatement("INSERT OR IGNORE INTO scope (module_pkg_name, app_pkg_name, user_id) SELECT DISTINCT old_modules.module_pkg_name, old_scope.app_pkg_name, old_scope.user_id FROM old_scope INNER JOIN old_modules ON old_modules.mid = old_scope.mid WHERE old_modules.module_pkg_name != old_scope.app_pkg_name;").execute();
+                            db.compileStatement("INSERT OR IGNORE INTO modules_state (module_pkg_name, user_id, enabled) SELECT DISTINCT old_modules.module_pkg_name, old_scope.user_id, old_modules.enabled FROM old_modules INNER JOIN old_scope USING (mid) WHERE old_modules.enabled = 1;").execute();
+                        } else if (tableExists("old_modules")) {
+                            db.compileStatement("INSERT OR IGNORE INTO modules_state (module_pkg_name, user_id, enabled) SELECT module_pkg_name, 0, enabled FROM old_modules WHERE enabled = 1 AND module_pkg_name != 'lspd';").execute();
+                        }
+                        if (tableExists("configs")) {
+                            migrateOldConfigs("configs");
+                        }
+                        for (var moduleName : blockedScopeRequests) {
+                            var values = new ContentValues();
+                            values.put("scope_request_blocked", true);
+                            db.update("modules_state", values, "module_pkg_name = ?", new String[]{moduleName});
+                        }
+                        db.compileStatement("DROP TABLE IF EXISTS old_scope;").execute();
+                        db.compileStatement("DROP TABLE IF EXISTS old_configs;").execute();
+                        db.compileStatement("DROP TABLE IF EXISTS old_modules;").execute();
+                        db.compileStatement("DROP TABLE IF EXISTS configs;").execute();
+                        db.setVersion(DB_VERSION);
                     });
+                    break;
+                case 4:
+                case 100:
+                    executeInTransaction(() -> {
+                        createCurrentTables();
+                        db.setVersion(DB_VERSION);
+                    });
+                    break;
                 default:
                     break;
             }
@@ -415,6 +472,56 @@ public class ConfigManager {
             Log.e(TAG, "init db", e);
         }
 
+    }
+
+    private boolean tableExists(String tableName) {
+        try (Cursor cursor = db.query("sqlite_master", new String[]{"name"},
+                "type = 'table' AND name = ?", new String[]{tableName}, null, null, null)) {
+            return cursor != null && cursor.moveToNext();
+        }
+    }
+
+    private boolean columnExists(String tableName, String columnName) {
+        try (Cursor cursor = db.rawQuery("PRAGMA table_info(" + tableName + ")", null)) {
+            var nameIndex = cursor.getColumnIndex("name");
+            while (cursor.moveToNext()) {
+                if (columnName.equals(cursor.getString(nameIndex))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void migrateOldConfigs(String tableName) {
+        if (!columnExists(tableName, "module_pkg_name") ||
+                !columnExists(tableName, "user_id") ||
+                !columnExists(tableName, "group") ||
+                !columnExists(tableName, "key") ||
+                !columnExists(tableName, "data")) {
+            return;
+        }
+        db.compileStatement("INSERT OR REPLACE INTO module_configs (module_pkg_name, user_id, group_name, key_name, data) SELECT module_pkg_name, user_id, `group`, `key`, data FROM " + tableName + " WHERE module_pkg_name != 'lspd';").execute();
+        db.compileStatement("INSERT OR REPLACE INTO lspd_configs (key_name, data) SELECT `key`, data FROM " + tableName + " WHERE module_pkg_name = 'lspd' AND `key` != 'scope_request_blocked';").execute();
+    }
+
+    @SuppressWarnings("unchecked")
+    private Set<String> readOldBlockedScopeRequests(String tableName) {
+        if (!columnExists(tableName, "key") || !columnExists(tableName, "data")) {
+            return Collections.emptySet();
+        }
+        try (Cursor cursor = db.query(tableName, new String[]{"data"},
+                "`key` = ?", new String[]{"scope_request_blocked"}, null, null, null)) {
+            if (cursor != null && cursor.moveToNext()) {
+                var object = SerializationUtils.deserialize(cursor.getBlob(cursor.getColumnIndex("data")));
+                if (object instanceof Set<?>) {
+                    return (Set<String>) object;
+                }
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "migrate scope_request_blocked", e);
+        }
+        return Collections.emptySet();
     }
 
     private List<ProcessScope> getAssociatedProcesses(Application app) throws RemoteException {
@@ -438,15 +545,34 @@ public class ConfigManager {
     private @NonNull
     Map<String, HashMap<String, Object>> fetchModuleConfig(String name, int user_id) {
         var config = new ConcurrentHashMap<String, HashMap<String, Object>>();
+        if (name.equals("lspd")) {
+            try (Cursor cursor = db.query("lspd_configs", new String[]{"key_name", "data"},
+                    null, null, null, null, null)) {
+                if (cursor == null) {
+                    Log.e(TAG, "db cache failed");
+                    return config;
+                }
+                int keyIdx = cursor.getColumnIndex("key_name");
+                int dataIdx = cursor.getColumnIndex("data");
+                while (cursor.moveToNext()) {
+                    var key = cursor.getString(keyIdx);
+                    var data = cursor.getBlob(dataIdx);
+                    var object = SerializationUtils.deserialize(data);
+                    if (object == null) continue;
+                    config.computeIfAbsent("config", g -> new HashMap<>()).put(key, object);
+                }
+            }
+            return config;
+        }
 
-        try (Cursor cursor = db.query("configs", new String[]{"`group`", "`key`", "data"},
+        try (Cursor cursor = db.query("module_configs", new String[]{"group_name", "key_name", "data"},
                 "module_pkg_name = ? and user_id = ?", new String[]{name, String.valueOf(user_id)}, null, null, null)) {
             if (cursor == null) {
                 Log.e(TAG, "db cache failed");
                 return config;
             }
-            int groupIdx = cursor.getColumnIndex("group");
-            int keyIdx = cursor.getColumnIndex("key");
+            int groupIdx = cursor.getColumnIndex("group_name");
+            int keyIdx = cursor.getColumnIndex("key_name");
             int dataIdx = cursor.getColumnIndex("data");
             while (cursor.moveToNext()) {
                 var group = cursor.getString(groupIdx);
@@ -477,15 +603,24 @@ public class ConfigManager {
                     if (value instanceof Serializable) {
                         newPrefs.put(key, value);
                         var contents = new ContentValues();
-                        contents.put("`group`", group);
-                        contents.put("`key`", key);
                         contents.put("data", SerializationUtils.serialize((Serializable) value));
-                        contents.put("module_pkg_name", moduleName);
-                        contents.put("user_id", String.valueOf(userId));
-                        db.insertWithOnConflict("configs", null, contents, SQLiteDatabase.CONFLICT_REPLACE);
+                        if (moduleName.equals("lspd")) {
+                            contents.put("key_name", key);
+                            db.insertWithOnConflict("lspd_configs", null, contents, SQLiteDatabase.CONFLICT_REPLACE);
+                        } else {
+                            contents.put("group_name", group);
+                            contents.put("key_name", key);
+                            contents.put("module_pkg_name", moduleName);
+                            contents.put("user_id", String.valueOf(userId));
+                            db.insertWithOnConflict("module_configs", null, contents, SQLiteDatabase.CONFLICT_REPLACE);
+                        }
                     } else {
                         newPrefs.remove(key);
-                        db.delete("configs", "module_pkg_name=? and user_id=? and `group`=? and `key`=?", new String[]{moduleName, String.valueOf(userId), group, key});
+                        if (moduleName.equals("lspd")) {
+                            db.delete("lspd_configs", "key_name=?", new String[]{key});
+                        } else {
+                            db.delete("module_configs", "module_pkg_name=? and user_id=? and group_name=? and key_name=?", new String[]{moduleName, String.valueOf(userId), group, key});
+                        }
                     }
                 }
                 var bundle = new Bundle();
@@ -499,7 +634,11 @@ public class ConfigManager {
     }
 
     public void deleteModulePrefs(String moduleName, int userId, String group) {
-        db.delete("configs", "module_pkg_name=? and user_id=? and `group`=?", new String[]{moduleName, String.valueOf(userId), group});
+        if (moduleName.equals("lspd")) {
+            db.delete("lspd_configs", null, null);
+        } else {
+            db.delete("module_configs", "module_pkg_name=? and user_id=? and group_name=?", new String[]{moduleName, String.valueOf(userId), group});
+        }
         var config = cachedConfig.getOrDefault(new Pair<>(moduleName, userId), null);
         if (config != null) {
             config.remove(group);
@@ -528,7 +667,7 @@ public class ConfigManager {
             else lastModuleCacheTime = SystemClock.elapsedRealtime();
         }
         Set<SharedMemory> toClose = ConcurrentHashMap.newKeySet();
-        try (Cursor cursor = db.query(true, "modules", new String[]{"module_pkg_name", "apk_path"},
+        try (Cursor cursor = db.query(true, "modules INNER JOIN modules_state USING (module_pkg_name)", new String[]{"module_pkg_name", "apk_path"},
                 "enabled = 1", null, null, null, null, null)) {
             if (cursor == null) {
                 Log.e(TAG, "db cache failed");
@@ -559,42 +698,38 @@ public class ConfigManager {
 
             modules.stream().parallel().filter(m -> {
                 var oldModule = cachedModule.get(m.packageName);
-                PackageInfo pkgInfo = null;
+                PackageMonitorService.ModuleInfo moduleInfo = null;
                 try {
-                    pkgInfo = PackageService.getPackageInfoFromAllUsers(m.packageName, MATCH_ALL_FLAGS).values().stream().findFirst().orElse(null);
+                    moduleInfo = PackageMonitorService.getInstance().getModuleInfo(m.packageName, -1);
                 } catch (Throwable e) {
                     Log.w(TAG, "Get package info of " + m.packageName, e);
                 }
-                if (pkgInfo == null || pkgInfo.applicationInfo == null) {
+                if (moduleInfo == null) {
                     Log.w(TAG, "Failed to find package info of " + m.packageName);
                     obsoleteModules.add(m.packageName);
                     return false;
                 }
 
                 if (oldModule != null &&
-                        pkgInfo.applicationInfo.sourceDir != null &&
+                        moduleInfo.applicationInfo.sourceDir != null &&
                         m.apkPath != null && oldModule.apkPath != null &&
                         existsInGlobalNamespace(m.apkPath) &&
                         Objects.equals(m.apkPath, oldModule.apkPath) &&
-                        Objects.equals(new File(pkgInfo.applicationInfo.sourceDir).getParent(), new File(m.apkPath).getParent())) {
+                        Objects.equals(m.apkPath, moduleInfo.apkPath)) {
                     if (oldModule.appId != -1) {
                         Log.d(TAG, m.packageName + " did not change, skip caching it");
                     } else {
                         // cache from system server, update application info
-                        oldModule.applicationInfo = pkgInfo.applicationInfo;
+                        oldModule.applicationInfo = moduleInfo.applicationInfo;
                     }
                     return false;
                 }
-                m.apkPath = getModuleApkPath(pkgInfo.applicationInfo);
-                if (m.apkPath == null) {
-                    Log.w(TAG, "Failed to find path of " + m.packageName);
-                    obsoleteModules.add(m.packageName);
-                    return false;
-                } else {
+                if (!Objects.equals(m.apkPath, moduleInfo.apkPath)) {
+                    m.apkPath = moduleInfo.apkPath;
                     obsoletePaths.put(m.packageName, m.apkPath);
                 }
-                m.appId = pkgInfo.applicationInfo.uid;
-                m.applicationInfo = pkgInfo.applicationInfo;
+                m.appId = moduleInfo.appId;
+                m.applicationInfo = moduleInfo.applicationInfo;
                 m.service = oldModule != null ? oldModule.service : new LSPInjectedModuleService(m.packageName);
                 return true;
             }).forEach(m -> {
@@ -622,6 +757,7 @@ public class ConfigManager {
             Log.d(TAG, module.getKey() + " " + module.getValue().apkPath);
         }
         cacheScopes();
+        LSPModuleService.sendBindersForRunningModules();
         toClose.forEach(SharedMemory::close);
     }
 
@@ -633,8 +769,8 @@ public class ConfigManager {
             else lastScopeCacheTime = SystemClock.elapsedRealtime();
         }
         cachedScope.clear();
-        try (Cursor cursor = db.query("scope INNER JOIN modules ON scope.mid = modules.mid", new String[]{"app_pkg_name", "module_pkg_name", "user_id"},
-                "enabled = 1", null, null, null, null)) {
+        try (Cursor cursor = db.query("scope INNER JOIN modules_state USING (module_pkg_name, user_id)", new String[]{"app_pkg_name", "scope.module_pkg_name AS module_pkg_name", "scope.user_id AS user_id"},
+                "modules_state.enabled = 1", null, null, null, null)) {
             int appPkgNameIdx = cursor.getColumnIndex("app_pkg_name");
             int modulePkgNameIdx = cursor.getColumnIndex("module_pkg_name");
             int userIdIdx = cursor.getColumnIndex("user_id");
@@ -714,7 +850,7 @@ public class ConfigManager {
                 for (Application obsoleteModule : obsoleteModules) {
                     Log.d(TAG, "removing obsolete module: " + obsoleteModule.packageName + "/" + obsoleteModule.userId);
                     removeModuleScopeWithoutCache(obsoleteModule);
-                    removeBlockedScopeRequest(obsoleteModule.packageName);
+                    removeBlockedScopeRequest(obsoleteModule.packageName, obsoleteModule.userId);
                 }
             } else {
                 Log.w(TAG, "pm is dead while caching. invalidating...");
@@ -746,8 +882,8 @@ public class ConfigManager {
     @Nullable
     public List<Application> getModuleScope(String packageName) {
         if (packageName.equals("lspd")) return null;
-        try (Cursor cursor = db.query("scope INNER JOIN modules ON scope.mid = modules.mid", new String[]{"app_pkg_name", "user_id"},
-                "modules.module_pkg_name = ?", new String[]{packageName}, null, null, null)) {
+        try (Cursor cursor = db.query("scope", new String[]{"app_pkg_name", "user_id"},
+                "module_pkg_name = ?", new String[]{packageName}, null, null, null)) {
             if (cursor == null) {
                 return null;
             }
@@ -764,25 +900,17 @@ public class ConfigManager {
         }
     }
 
-    @Nullable
-    public String getModuleApkPath(ApplicationInfo info) {
-        String[] apks;
-        if (info.splitSourceDirs != null) {
-            apks = Arrays.copyOf(info.splitSourceDirs, info.splitSourceDirs.length + 1);
-            apks[info.splitSourceDirs.length] = info.sourceDir;
-        } else apks = new String[]{info.sourceDir};
-        var apkPath = Arrays.stream(apks).parallel().filter(apk -> {
-            if (apk == null) {
-                Log.w(TAG, info.packageName + " has null apk path???");
-                return false;
-            }
-            try (var zip = new ZipFile(toGlobalNamespace(apk))) {
-                return zip.getEntry("META-INF/xposed/java_init.list") != null || zip.getEntry("assets/xposed_init") != null;
-            } catch (IOException e) {
-                return false;
-            }
-        }).findFirst();
-        return apkPath.orElse(null);
+    private boolean ensureModuleApkPath(String packageName, int userId) throws RemoteException {
+        if (packageName.equals("lspd")) return false;
+        var moduleInfo = PackageMonitorService.getInstance().getModuleInfo(packageName, userId);
+        if (moduleInfo == null || moduleInfo.apkPath == null) return false;
+        return updateModuleApkPath(packageName, moduleInfo.apkPath, false) || hasModule(packageName);
+    }
+
+    private boolean hasModule(String packageName) {
+        try (Cursor cursor = db.query("modules", new String[]{"module_pkg_name"}, "module_pkg_name=?", new String[]{packageName}, null, null, null)) {
+            return cursor != null && cursor.moveToNext();
+        }
     }
 
     public boolean updateModuleApkPath(String packageName, String apkPath, boolean force) {
@@ -795,7 +923,7 @@ public class ConfigManager {
         ContentValues values = new ContentValues();
         values.put("module_pkg_name", packageName);
         values.put("apk_path", apkPath);
-        // insert or update in two step since insert or replace will change the autoincrement mid
+        // insert or update in two steps to avoid replacing the module row and cascading child tables
         int count = (int) db.insertWithOnConflict("modules", null, values, SQLiteDatabase.CONFLICT_IGNORE);
         if (count < 0) {
             var cached = cachedModule.getOrDefault(packageName, null);
@@ -814,32 +942,15 @@ public class ConfigManager {
         return count > 0;
     }
 
-    // Only be called before updating modules. No need to cache.
-    private int getModuleId(String packageName) {
-        if (packageName.equals("lspd")) return -1;
-        if (db.inTransaction()) {
-            Log.w(TAG, "get module id should not be called inside transaction");
-            return -1;
-        }
-        try (Cursor cursor = db.query("modules", new String[]{"mid"}, "module_pkg_name=?", new String[]{packageName}, null, null, null)) {
-            if (cursor == null) return -1;
-            if (cursor.getCount() != 1) return -1;
-            cursor.moveToFirst();
-            return cursor.getInt(cursor.getColumnIndexOrThrow("mid"));
-        }
-    }
-
     public boolean setModuleScope(String packageName, List<Application> scopes) throws RemoteException {
         if (scopes == null) return false;
-        enableModule(packageName);
-        int mid = getModuleId(packageName);
-        if (mid == -1) return false;
+        if (!ensureModuleApkPath(packageName, -1)) return false;
         executeInTransaction(() -> {
-            db.delete("scope", "mid = ?", new String[]{String.valueOf(mid)});
+            db.delete("scope", "module_pkg_name = ?", new String[]{packageName});
             for (Application app : scopes) {
                 if (app.packageName.equals("system") && app.userId != 0) continue;
                 ContentValues values = new ContentValues();
-                values.put("mid", mid);
+                values.put("module_pkg_name", packageName);
                 values.put("app_pkg_name", app.packageName);
                 values.put("user_id", app.userId);
                 db.insertWithOnConflict("scope", null, values, SQLiteDatabase.CONFLICT_IGNORE);
@@ -852,12 +963,10 @@ public class ConfigManager {
 
     public boolean setModuleScope(String packageName, String scopePackageName, int userId) {
         if (scopePackageName == null) return false;
-        int mid = getModuleId(packageName);
-        if (mid == -1) return false;
         if (scopePackageName.equals("system") && userId != 0) return false;
         executeInTransaction(() -> {
             ContentValues values = new ContentValues();
-            values.put("mid", mid);
+            values.put("module_pkg_name", packageName);
             values.put("app_pkg_name", scopePackageName);
             values.put("user_id", userId);
             db.insertWithOnConflict("scope", null, values, SQLiteDatabase.CONFLICT_IGNORE);
@@ -869,11 +978,22 @@ public class ConfigManager {
 
     public boolean removeModuleScope(String packageName, String scopePackageName, int userId) {
         if (scopePackageName == null) return false;
-        int mid = getModuleId(packageName);
-        if (mid == -1) return false;
         if (scopePackageName.equals("system") && userId != 0) return false;
         executeInTransaction(() -> {
-            db.delete("scope", "mid = ? AND app_pkg_name = ? AND user_id = ?", new String[]{String.valueOf(mid), scopePackageName, String.valueOf(userId)});
+            db.delete("scope", "module_pkg_name = ? AND app_pkg_name = ? AND user_id = ?", new String[]{packageName, scopePackageName, String.valueOf(userId)});
+        });
+        // Called by xposed service, should be async
+        updateCaches(false);
+        return true;
+    }
+
+    public boolean removeModuleScope(String packageName, List<String> scopePackageNames, int userId) {
+        if (scopePackageNames == null) return false;
+        if (scopePackageNames.contains("system") && userId != 0) return false;
+        executeInTransaction(() -> {
+            for (var scopePackageName : scopePackageNames) {
+                db.delete("scope", "module_pkg_name = ? AND app_pkg_name = ? AND user_id = ?", new String[]{packageName, scopePackageName, String.valueOf(userId)});
+            }
         });
         // Called by xposed service, should be async
         updateCaches(false);
@@ -881,20 +1001,23 @@ public class ConfigManager {
     }
 
 
-    public String[] enabledModules() {
-        try (Cursor cursor = db.query("modules", new String[]{"module_pkg_name"}, "enabled = 1", null, null, null, null)) {
+    public List<Application> enabledModules() {
+        try (Cursor cursor = db.query("modules_state", new String[]{"module_pkg_name", "user_id"}, "enabled = 1", null, null, null, null)) {
             if (cursor == null) {
                 Log.e(TAG, "query enabled modules failed");
-                return null;
+                return Collections.emptyList();
             }
             int modulePkgNameIdx = cursor.getColumnIndex("module_pkg_name");
-            HashSet<String> result = new HashSet<>();
+            int userIdIdx = cursor.getColumnIndex("user_id");
+            ArrayList<Application> result = new ArrayList<>();
             while (cursor.moveToNext()) {
-                var pkgName = cursor.getString(modulePkgNameIdx);
-                if (pkgName.equals("lspd")) continue;
-                result.add(pkgName);
+                var app = new Application();
+                app.packageName = cursor.getString(modulePkgNameIdx);
+                app.userId = cursor.getInt(userIdIdx);
+                if (app.packageName.equals("lspd")) continue;
+                result.add(app);
             }
-            return result.toArray(new String[0]);
+            return result;
         }
     }
 
@@ -926,9 +1049,7 @@ public class ConfigManager {
 
     private boolean removeModuleScopeWithoutCache(Application module) {
         if (module.packageName.equals("lspd")) return false;
-        int mid = getModuleId(module.packageName);
-        if (mid == -1) return false;
-        boolean res = executeInTransaction(() -> db.delete("scope", "mid = ? and user_id = ?", new String[]{String.valueOf(mid), String.valueOf(module.userId)}) > 0);
+        boolean res = executeInTransaction(() -> db.delete("scope", "module_pkg_name = ? and user_id = ?", new String[]{module.packageName, String.valueOf(module.userId)}) > 0);
         try {
             removeModulePrefs(module.userId, module.packageName);
         } catch (IOException e) {
@@ -942,13 +1063,9 @@ public class ConfigManager {
                 new String[]{app.packageName, String.valueOf(app.userId)}) > 0);
     }
 
-    public boolean disableModule(String packageName) {
+    public boolean disableModule(String packageName, int userId) {
         if (packageName.equals("lspd")) return false;
-        boolean changed = executeInTransaction(() -> {
-            ContentValues values = new ContentValues();
-            values.put("enabled", 0);
-            return db.update("modules", values, "module_pkg_name = ?", new String[]{packageName}) > 0;
-        });
+        boolean changed = setModuleState(packageName, userId, "enabled", false);
         if (changed) {
             // called by manager, should be async
             updateCaches(false);
@@ -958,29 +1075,36 @@ public class ConfigManager {
         }
     }
 
+    private boolean setModuleState(String packageName, int userId, String key, boolean value) {
+        return executeInTransaction(() -> {
+            ContentValues values = new ContentValues();
+            values.put(key, value);
+            if (db.update("modules_state", values, "module_pkg_name = ? AND user_id = ?", new String[]{packageName, String.valueOf(userId)}) > 0) {
+                return true;
+            }
+            values.put("module_pkg_name", packageName);
+            values.put("user_id", userId);
+            return db.insertWithOnConflict("modules_state", null, values, SQLiteDatabase.CONFLICT_IGNORE) >= 0;
+        });
+    }
+
     public boolean isModuleEnabledForUser(String packageName, int userId) {
-        try (Cursor cursor = db.query("modules", new String[]{"enabled"},
-                "module_pkg_name = ? AND enabled = 1",
-                new String[]{packageName}, null, null, null)) {
+        try (Cursor cursor = db.query("modules_state", new String[]{"enabled"},
+                "module_pkg_name = ? AND user_id = ? AND enabled = 1",
+                new String[]{packageName, String.valueOf(userId)}, null, null, null)) {
             return cursor.getCount() > 0;
         }
     }
 
-    public boolean enableModule(String packageName) throws RemoteException {
+    public boolean enableModule(String packageName, int userId) throws RemoteException {
         if (packageName.equals("lspd")) return false;
-        PackageInfo pkgInfo = PackageService.getPackageInfoFromAllUsers(packageName, PackageService.MATCH_ALL_FLAGS).values().stream().findFirst().orElse(null);
-        if (pkgInfo == null || pkgInfo.applicationInfo == null) return false;
-        var modulePath = getModuleApkPath(pkgInfo.applicationInfo);
-        if (modulePath == null) return false;
-        boolean changed = updateModuleApkPath(packageName, modulePath, false);
-        changed = executeInTransaction(() -> {
-            ContentValues values = new ContentValues();
-            values.put("enabled", 1);
-            return db.update("modules", values, "module_pkg_name = ?", new String[]{packageName}) > 0;
-        }) || changed;
+        if (!ensureModuleApkPath(packageName, userId)) return false;
+        boolean changed = false;
+        changed = setModuleState(packageName, userId, "enabled", true) || changed;
         if (changed) {
             // Called by manager, should be async
             updateCaches(false);
+            cacheHandler.post(() -> LSPModuleService.sendBinderForRunningModule(packageName));
             return true;
         } else {
             return false;
@@ -1017,22 +1141,25 @@ public class ConfigManager {
         updateModulePrefs("lspd", 0, "config", "enable_dex_obfuscate", on);
     }
 
-    public boolean scopeRequestBlocked(String packageName) {
-        return scopeRequestBlocked.contains(packageName);
+    public boolean scopeRequestBlocked(String packageName, int userId) {
+        try (Cursor cursor = db.query("modules_state", new String[]{"scope_request_blocked"},
+                "module_pkg_name = ? AND user_id = ?", new String[]{packageName, String.valueOf(userId)}, null, null, null)) {
+            return cursor.moveToNext() && cursor.getInt(cursor.getColumnIndex("scope_request_blocked")) != 0;
+        }
     }
 
-    public void blockScopeRequest(String packageName) {
-        var set = new HashSet<>(scopeRequestBlocked);
-        set.add(packageName);
-        updateModulePrefs("lspd", 0, "config", "scope_request_blocked", set);
-        scopeRequestBlocked = set;
+    public void blockScopeRequest(String packageName, int userId) {
+        setModuleState(packageName, userId, "scope_request_blocked", true);
     }
 
     public void removeBlockedScopeRequest(String packageName) {
-        var set = new HashSet<>(scopeRequestBlocked);
-        set.remove(packageName);
-        updateModulePrefs("lspd", 0, "config", "scope_request_blocked", set);
-        scopeRequestBlocked = set;
+        var values = new ContentValues();
+        values.put("scope_request_blocked", false);
+        db.update("modules_state", values, "module_pkg_name = ?", new String[]{packageName});
+    }
+
+    public void removeBlockedScopeRequest(String packageName, int userId) {
+        setModuleState(packageName, userId, "scope_request_blocked", false);
     }
 
     // this is for manager and should not use the cache result
@@ -1147,9 +1274,11 @@ public class ConfigManager {
         });
     }
 
-    private void removeModulePrefs(int uid, String packageName) throws IOException {
+    private void removeModulePrefs(int userId, String packageName) throws IOException {
         if (packageName == null) return;
-        var path = Paths.get(getPrefsPath(packageName, uid));
+        db.delete("module_configs", "module_pkg_name=? and user_id=?", new String[]{packageName, String.valueOf(userId)});
+        cachedConfig.remove(new Pair<>(packageName, userId));
+        var path = miscPath.resolve("prefs" + (userId == 0 ? "" : String.valueOf(userId))).resolve(packageName);
         ConfigFileManager.deleteFolderIfExists(path);
     }
 

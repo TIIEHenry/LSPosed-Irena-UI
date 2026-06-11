@@ -9,9 +9,11 @@ import io.github.libxposed.api.XposedInterface;
 
 public class OpenDexFileHooker implements XposedInterface.Hooker {
 
-    public static void after(XposedInterface.AfterHookCallback callback) {
+    @Override
+    public Object intercept(XposedInterface.Chain chain) throws Throwable {
+        var result = chain.proceed();
         ClassLoader classLoader = null;
-        for (var arg : callback.getArgs()) {
+        for (var arg : chain.getArgs()) {
             if (arg instanceof ClassLoader) {
                 classLoader = (ClassLoader) arg;
             }
@@ -21,11 +23,12 @@ public class OpenDexFileHooker implements XposedInterface.Hooker {
         }
         while (classLoader != null) {
             if (classLoader == LSPosedBridge.class.getClassLoader()) {
-                HookBridge.setTrusted(callback.getResult());
-                return;
+                HookBridge.setTrusted(result);
+                return result;
             } else {
                 classLoader = classLoader.getParent();
             }
         }
+        return result;
     }
 }
