@@ -501,7 +501,7 @@ public class AffectedAppsFragment extends BaseFragment implements ModuleUtil.Mod
         public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
             AffectedApp affectedApp = showList.get(position);
             boolean nonSelected = affectedApp.modules.isEmpty();
-            boolean anyEnabled = affectedApp.modules.stream().anyMatch(installedModule -> moduleUtil.isModuleEnabled(installedModule.packageName));
+            boolean anyEnabled = affectedApp.modules.stream().anyMatch(installedModule -> moduleUtil.isModuleEnabled(installedModule.packageName, installedModule.userId));
             holder.itemView.setAlpha(anyEnabled ? 1f : (nonSelected ? .3f : 0.6f));
             String packageName = affectedApp.packageName;
             boolean system = packageName.equals("system");

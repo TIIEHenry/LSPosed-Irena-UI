@@ -256,7 +256,7 @@ public class AffectedAppAdapter extends EmptyStateRecyclerView.EmptyStateAdapter
     public void onBindViewHolder(@NonNull ViewHolder holder, int position) {
         ModuleUtil.InstalledModule installedModule = showList.get(position);
         String packageName = installedModule.packageName;
-        boolean moduleEnabled = moduleUtil.isModuleEnabled(packageName);
+        boolean moduleEnabled = moduleUtil.isModuleEnabled(packageName, installedModule.userId);
         holder.root.setAlpha(moduleEnabled && this.enabled ? 1.0f : .5f);
         CharSequence appName = installedModule.getAppName();
         int userId = installedModule.userId;
